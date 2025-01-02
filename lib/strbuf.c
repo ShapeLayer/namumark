@@ -240,7 +240,7 @@ void strbuf_normalize_whitespace(strbuf *buf) {
 
   for (r = 0, w = 0; r < buf->size; r++) {
     if (isspace(buf->ptr[r])) {
-      if (!last_char_was_space) {
+      if (!last_char_was_space && w > 0) {
         buf->ptr[w++] = ' ';
         last_char_was_space = true;
       }
@@ -248,6 +248,10 @@ void strbuf_normalize_whitespace(strbuf *buf) {
       buf->ptr[w++] = buf->ptr[r];
       last_char_was_space = false;
     }
+  }
+
+  if (w > 0 && buf->ptr[w - 1] == ' ') {
+    w--;
   }
 
   strbuf_truncate(buf, w);
