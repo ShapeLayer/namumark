@@ -1,9 +1,10 @@
 cc_test(
   name = "namumark-test",
   size = "small",
-  srcs = ["hello_test.cc"],
+  srcs = ["strbuf_test.cc"],
   deps = [
     "@googletest//:gtest",
     "@googletest//:gtest_main",
+    "//lib:namumark-lib",
   ],
 )
