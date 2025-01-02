@@ -1,0 +1,9 @@
+cc_test(
+  name = "namumark-test",
+  size = "small",
+  srcs = ["hello_test.cc"],
+  deps = [
+    "@googletest//:gtest",
+    "@googletest//:gtest_main",
+  ],
+)

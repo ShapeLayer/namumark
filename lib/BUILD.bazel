@@ -1,0 +1,8 @@
+cc_library(
+  name = "namumark-lib",
+  srcs = [],
+  hdrs = [
+    "version.h"
+  ],
+  visibility = ["//main:__pkg__"],
+)

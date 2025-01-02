@@ -1,0 +1,10 @@
+cc_binary(
+  name = "namumark",
+  srcs = [
+    "main.c",
+    "version.h",
+  ],
+  deps = [
+    "//lib:namumark-lib",
+  ],
+)

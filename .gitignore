@@ -1,0 +1,13 @@
+# Bazel
+/bazel-*
+MODULE.bazel.lock
+
+# IntelliJ
+/.ijwb/
+/.aswb/
+/.clwb/
+
+# Misc
+.DS_Store
+a.out
+*.gch
