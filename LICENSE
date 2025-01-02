@@ -24,8 +24,7 @@ SOFTWARE.
 
 buffer.h(strbuf.h), buffer.c(strbuf.c), chunk.h
 
-are derived from code (C) 2012 Github, Inc.
-(derived from "https://github.com/commonmark/cmark")
+are derived from "https://github.com/commonmark/cmark" (derived from code (C) 2012 Github, Inc.)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
