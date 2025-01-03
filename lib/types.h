@@ -66,4 +66,4 @@ typedef enum {
 }
 #endif
 
-#endif
+#endif // __NAMUMARK_H__

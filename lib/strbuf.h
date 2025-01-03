@@ -83,4 +83,4 @@ void strbuf_unescape(strbuf *buf);
 }
 #endif
 
-#endif
+#endif // __STRBUF_H__
