@@ -1,11 +1,16 @@
 cc_library(
   name = "namumark-lib",
   srcs = [
+    "blocks.c",
     "inlines.c",
+    "parser.c",
     "strbuf.c",
   ],
   hdrs = [
+    "blocks.h",
     "inlines.h",
+    "node.h",
+    "parser.h",
     "strbuf.h",
     "types.h",
     "version.h"
