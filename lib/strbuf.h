@@ -23,8 +23,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#ifndef __BUFFER_H__
-#define __BUFFER_H__
+#ifndef __STRBUF_H__
+#define __STRBUF_H__
 
 #include <stdint.h>
 
@@ -35,7 +35,7 @@ extern "C" {
 typedef int64_t bufsize_t;
 #define BUFSIZE_MAX INT64_MAX
 
-unsigned char strbuf__init_buf[1];
+extern unsigned char strbuf__init_buf[1];
 
 typedef struct strbuf {
   unsigned char *ptr;

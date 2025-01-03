@@ -1,7 +1,7 @@
 cc_test(
   name = "namumark-test",
   size = "small",
-  srcs = ["strbuf_test.cc"],
+  srcs = glob(["*_test.cc"]),
   deps = [
     "@googletest//:gtest",
     "@googletest//:gtest_main",

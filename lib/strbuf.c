@@ -36,6 +36,8 @@ SOFTWARE.
 #define MIN(x, y) ((x < y) ? x : y)
 #endif
 
+unsigned char strbuf__init_buf[1] = {0};
+
 void strbuf_init(strbuf *buf, bufsize_t init_size) {
   buf->ptr = strbuf__init_buf;
   buf->asize = 0;
