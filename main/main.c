@@ -15,9 +15,10 @@ void print_usage() {
 int main(int argc, char *argv[]) {
   int i, file_counts = 0;
   char **files;
-  char buffer[4096];
+  unsigned char buffer[4096];
   size_t bytes;
   namumark_parser *parser;
+  namumark_node *document;
   int ret = 1;
 
   files = (char **)calloc(argc, sizeof(char *));
@@ -44,10 +45,16 @@ int main(int argc, char *argv[]) {
     }
 
     while ((bytes = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
-
+      parser_feed(parser, buffer, bytes);
+      if (bytes < sizeof(buffer)) { break; }
     }
     fclose(fp);
   }
+
+  // document = parser_finish(parser);
+  if (!document /*
+    || !print_document(document, writer, options, width, parser)
+  */) { goto main_failure; }
 
 main_success:
   ret = 0;

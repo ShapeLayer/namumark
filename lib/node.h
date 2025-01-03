@@ -22,6 +22,8 @@ typedef struct namumark_node {
   int start_column;
   int end_line;
   int end_column;
+
+  namumark_node_internal_flags flags;
 } namumark_node;
 
 #ifdef __cplusplus

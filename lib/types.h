@@ -5,6 +5,11 @@
 extern "C" {
 #endif
 
+/**
+ * NAMUMARK_NODE_TYPE
+ * Definition of namumark syntax types.
+ * @see https://namu.wiki/w/나무위키:문법%20도움말
+ */
 typedef enum {
   NAMUMARK_NODE_NONE = 0x0000,
 
@@ -61,6 +66,10 @@ typedef enum {
   NAMUMARK_NODE_MACRO_PAGECOUNT,
   NAMUMARK_NODE_MACRO_RUBY,
 } namumark_node_macro_type;
+
+typedef enum namumark_node_internal_flags {
+  NAMUMARK_NODE_OPEN = (1 << 0),
+} namumark_node_internal_flags;
 
 #ifdef __cplusplus
 }
