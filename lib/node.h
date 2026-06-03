@@ -24,7 +24,26 @@ typedef struct namumark_node {
   int end_column;
 
   namumark_node_internal_flags flags;
+
+  int level;
+  int folded;
+  int depth;
+  int indent;
+  int start_number;
+  int fixed_comment;
+  namumark_list_marker_type list_marker;
+  namumark_link_type link_type;
+  namumark_node_advanced_type advanced_type;
+  namumark_node_macro_type macro_type;
+
+  strbuf label;
+  strbuf target;
+  strbuf args;
 } namumark_node;
+
+namumark_node *namumark_node_new(namumark_node_type type, int start_line, int start_column);
+void namumark_node_append_child(namumark_node *parent, namumark_node *child);
+void namumark_node_free(namumark_node *node);
 
 #ifdef __cplusplus
 }

@@ -44,7 +44,6 @@ typedef struct strbuf {
 
 void strbuf_init(strbuf *buf, bufsize_t init_size);
 
-static void S_strbuf_grow_by(strbuf *buf, bufsize_t grow_size);
 void strbuf_grow(strbuf *buf, bufsize_t grow_size);
 
 bufsize_t strbuf_len(const strbuf *buf);

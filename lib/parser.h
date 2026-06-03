@@ -21,15 +21,25 @@ typedef struct namumark_parser {
   size_t total_size;
 
   bool last_buffer_endded_with_cr;
+  bool ignore_remaining_lines;
+  bool table_continuation;
+  int wiki_block_depth;
+  int wiki_nonwiki_depth;
+  int advanced_brace_depth;
+  int inline_advanced_depth;
+
+  struct namumark_node *wiki_block_node;
+  struct namumark_node *advanced_text_node;
+  struct namumark_node *inline_text_node;
 
   strbuf current_line;
 } namumark_parser;
 
-static void parser_dispose(namumark_parser *parser);
 void parser_reset(namumark_parser *parser);
-namumark_parser *parser_new();
-static void S_parser_feed(namumark_parser *parser, const unsigned char *buffer, size_t len);
+namumark_parser *parser_new(void);
+void parser_free(namumark_parser *parser);
 void parser_feed(namumark_parser *parser, const unsigned char *buffer, size_t len);
+namumark_node *parser_finish(namumark_parser *parser);
 
 #ifdef __cplusplus
 }
