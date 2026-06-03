@@ -1,6 +1,12 @@
-# Bazel
-/bazel-*
-MODULE.bazel.lock
+# CMake
+/build/
+CMakeCache.txt
+CMakeFiles/
+Testing/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+_deps/
 
 # IntelliJ
 /.ijwb/
