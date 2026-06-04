@@ -23,6 +23,8 @@ namumark_node *namumark_node_new(namumark_node_type type, int start_line, int st
   strbuf_init(&node->label, 0);
   strbuf_init(&node->target, 0);
   strbuf_init(&node->args, 0);
+  strbuf_init(&node->onclick, 0);
+  strbuf_init(&node->tag, 0);
 
   return node;
 }
@@ -61,6 +63,8 @@ void namumark_node_free(namumark_node *node) {
   strbuf_free(&node->label);
   strbuf_free(&node->target);
   strbuf_free(&node->args);
+  strbuf_free(&node->onclick);
+  strbuf_free(&node->tag);
   for (int i = 0; i < node->category_count; i++) {
     strbuf_free(&node->categories[i]);
   }

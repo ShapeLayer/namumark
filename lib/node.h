@@ -39,6 +39,8 @@ typedef struct namumark_node {
   strbuf label;
   strbuf target;
   strbuf args;
+  strbuf onclick;
+  strbuf tag;
 
   strbuf *categories;
   int category_count;

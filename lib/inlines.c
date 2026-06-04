@@ -408,6 +408,14 @@ static void parse_advanced_content(namumark_node *node) {
       if (value_len > 0) {
         strbuf_set(&node->target, node->content.ptr + value_start, value_len);
       }
+      extract_wiki_attr(node->content.ptr, node->content.size, "onclick", &value_start, &value_len);
+      if (value_len > 0) {
+        strbuf_set(&node->onclick, node->content.ptr + value_start, value_len);
+      }
+      extract_wiki_attr(node->content.ptr, node->content.size, "tag", &value_start, &value_len);
+      if (value_len > 0) {
+        strbuf_set(&node->tag, node->content.ptr + value_start, value_len);
+      }
 
       return;
     }

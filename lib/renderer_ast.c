@@ -176,6 +176,14 @@ static int print_node_json(const namumark_node *node, FILE *out, int depth) {
       !print_quoted(out, &node->args) || fputs(",\n", out) < 0) {
     return 0;
   }
+  if (!print_indent(out, depth + 1) || fputs("\"onclick\": ", out) < 0 ||
+      !print_quoted(out, &node->onclick) || fputs(",\n", out) < 0) {
+    return 0;
+  }
+  if (!print_indent(out, depth + 1) || fputs("\"tag\": ", out) < 0 ||
+      !print_quoted(out, &node->tag) || fputs(",\n", out) < 0) {
+    return 0;
+  }
 
   if (node->type == NAMUMARK_NODE_DOCUMENT) {
     if (!print_indent(out, depth + 1) || fputs("\"categories\": [", out) < 0) {

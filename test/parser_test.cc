@@ -308,6 +308,23 @@ TEST(ParserTest, ParsesBlockPreformattedFromBareTripleBrace) {
   parser_free(parser);
 }
 
+TEST(ParserTest, LeadingInlineLiteralStaysTextWhenClosedOnSameLine) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input = "{{{onclick}}}을 선언한 요소 스스로의 클래스도 부여/회수될 수 있습니다.\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_EQ(doc->first_child->type, NAMUMARK_NODE_TEXT);
+  EXPECT_EQ(doc->first_child->next, nullptr);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(ParserTest, HandlesBlockBoundaryTransitionsOnSameLine) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -464,6 +481,37 @@ TEST(ParserTest, TrailingWikiCloseInsideTableRowDoesNotLeak) {
   ASSERT_NE(tail, nullptr);
   ASSERT_EQ(tail->type, NAMUMARK_NODE_TEXT);
   EXPECT_STREQ(reinterpret_cast<const char *>(tail->content.ptr), "끝");
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(ParserTest, BlankLineSplitsAdjacentTables) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "|| A ||\n"
+      "|| B ||\n"
+      "\n"
+      "|| C || D ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+
+  const namumark_node *first_table = doc->first_child;
+  ASSERT_EQ(first_table->type, NAMUMARK_NODE_TABLE);
+  ASSERT_NE(first_table->next, nullptr);
+  const namumark_node *second_table = first_table->next;
+  ASSERT_EQ(second_table->type, NAMUMARK_NODE_TABLE);
+  EXPECT_EQ(second_table->next, nullptr);
+  EXPECT_NE(std::string(reinterpret_cast<const char *>(first_table->content.ptr)).find("|| A ||"),
+            std::string::npos);
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(first_table->content.ptr)).find("|| C || D ||"),
+            std::string::npos);
+  EXPECT_STREQ(reinterpret_cast<const char *>(second_table->content.ptr), "|| C || D ||");
 
   namumark_node_free(doc);
   parser_free(parser);
