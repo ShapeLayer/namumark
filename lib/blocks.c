@@ -7,10 +7,23 @@
 #include "node.h"
 #include "parser.h"
 
+/**
+ * @brief Allocate a block node at a source position.
+ *
+ * This wrapper exists so block parsing code reads in terms of block concepts,
+ * while node.c remains the single owner of allocation details.
+ */
 static namumark_node *make_block(namumark_node_type node_type, int start_line, int start_column) {
   return namumark_node_new(node_type, start_line, start_column);
 }
 
+/**
+ * @brief Remove CR/LF bytes from the current physical line.
+ *
+ * parser.c normalizes chunk boundaries, but blocks.c owns grammar decisions and
+ * should never see line-ending bytes as content.  The trailing NUL is restored
+ * for debug convenience; parsing uses explicit lengths.
+ */
 static void trim_line_end(strbuf *line) {
   while (line->size > 0) {
     unsigned char c = line->ptr[line->size - 1];
@@ -25,6 +38,7 @@ static void trim_line_end(strbuf *line) {
 }
 
 static bufsize_t skip_spaces(const unsigned char *s, bufsize_t len, bufsize_t from) {
+  /* Skip only literal spaces.  Tabs are meaningful in some NamuMark examples. */
   while (from < len && s[from] == ' ') {
     from++;
   }
@@ -32,6 +46,7 @@ static bufsize_t skip_spaces(const unsigned char *s, bufsize_t len, bufsize_t fr
 }
 
 static void trim_edges(const unsigned char *s, bufsize_t *start, bufsize_t *end) {
+  /* Used for metadata targets where surrounding whitespace is not significant. */
   while (*start < *end && isspace((unsigned char)s[*start])) {
     (*start)++;
   }
@@ -42,6 +57,7 @@ static void trim_edges(const unsigned char *s, bufsize_t *start, bufsize_t *end)
 
 static namumark_node *append_block_text(namumark_parser *parser, namumark_node_type type,
                                         const unsigned char *text, bufsize_t len) {
+  /* Most block recognizers finish by appending a raw content node to root. */
   namumark_node *node = make_block(type, parser->line_number, 1);
   if (node == NULL) {
     return NULL;
@@ -60,12 +76,20 @@ static namumark_node *append_block_text(namumark_parser *parser, namumark_node_t
 }
 
 static void set_block_target(namumark_node *node, const unsigned char *text, bufsize_t len) {
+  /* Redirect and link-like block nodes keep their semantic target separately. */
   if (node == NULL) {
     return;
   }
   strbuf_set(&node->target, text, len);
 }
 
+/**
+ * @brief Parse heading fences and optional folded-heading markers.
+ *
+ * NamuMark headings require symmetric left/right '=' counts and spaces around
+ * content.  The folded marker '#' must appear on both sides; accepting only one
+ * side would make malformed headings disappear instead of rendering as text.
+ */
 static int parse_heading_level(const unsigned char *line, bufsize_t len,
                                bufsize_t *content_start, bufsize_t *content_end,
                                int *is_folded) {
@@ -129,6 +153,7 @@ static int parse_heading_level(const unsigned char *line, bufsize_t len,
 }
 
 static int is_horizontal_rule_line(const unsigned char *line, bufsize_t len) {
+  /* Horizontal rules are deliberately recognized before paragraph fallback. */
   bufsize_t start = skip_spaces(line, len, 0);
   if (start >= len) {
     return 0;
@@ -149,6 +174,13 @@ static int is_horizontal_rule_line(const unsigned char *line, bufsize_t len) {
   return dash_count >= 4 && dash_count <= 9;
 }
 
+/**
+ * @brief Parse list marker, indentation, and starting number metadata.
+ *
+ * The parser stores indentation on list items rather than immediately building a
+ * nested tree.  The renderer can then decide how to normalize mixed list/table
+ * continuation cases without losing the original indentation signal.
+ */
 static int parse_list_prefix(const unsigned char *line, bufsize_t len, bufsize_t *text_start,
                              int *indent_level, namumark_list_marker_type *marker_type,
                              int *start_number) {
@@ -220,6 +252,7 @@ static int parse_list_prefix(const unsigned char *line, bufsize_t len, bufsize_t
 
 static int parse_blockquote_prefix(const unsigned char *line, bufsize_t len, bufsize_t *text_start,
                                    int *depth) {
+  /* Consecutive '>' characters record nesting depth; one optional space is ignored. */
   bufsize_t i = 0;
   int count = 0;
   while (i < len && line[i] == '>') {
@@ -240,6 +273,13 @@ static int parse_blockquote_prefix(const unsigned char *line, bufsize_t len, buf
   return 1;
 }
 
+/**
+ * @brief Recognize redirect lines that terminate normal document parsing.
+ *
+ * Redirects must be the first meaningful line.  Once accepted, later lines are
+ * ignored by process_line() to match NamuMark behavior and to keep category or
+ * table syntax after a redirect from leaking into the AST.
+ */
 static int parse_redirect_line(const unsigned char *line, bufsize_t len, bufsize_t *target_start,
                                bufsize_t *target_end) {
   static const char redirect_en[] = "#redirect";
@@ -262,6 +302,7 @@ static int parse_redirect_line(const unsigned char *line, bufsize_t len, bufsize
 
 static int parse_category_line(const unsigned char *line, bufsize_t len, bufsize_t *name_start,
                                bufsize_t *name_end) {
+  /* Categories are only recognized when the entire line is a category link. */
   static const char prefix[] = "[[분류:";
   static const size_t prefix_len = sizeof(prefix) - 1;
 
@@ -283,6 +324,13 @@ static int parse_category_line(const unsigned char *line, bufsize_t len, bufsize
   return *name_start < *name_end;
 }
 
+/**
+ * @brief Append a category name to the document root.
+ *
+ * Category syntax may include display text after '|'.  The document-level list
+ * stores only the actual category target so AST consumers do not need to repeat
+ * the split logic.
+ */
 static int append_document_category(namumark_node *document, const unsigned char *name,
                                     bufsize_t len) {
   if (document == NULL || name == NULL || len == 0) {
@@ -319,6 +367,13 @@ static int append_document_category(namumark_node *document, const unsigned char
   return 1;
 }
 
+/**
+ * @brief Parse a block footnote definition line.
+ *
+ * Inline footnotes are handled in inlines.c.  This helper only recognizes the
+ * block form so the parser can attach label/content metadata before inline
+ * rendering groups repeated references.
+ */
 static int parse_footnote_definition(const unsigned char *line, bufsize_t len,
                                      bufsize_t *label_start, bufsize_t *label_end,
                                      bufsize_t *text_start, bufsize_t *text_end) {
@@ -356,11 +411,13 @@ static int parse_footnote_definition(const unsigned char *line, bufsize_t len,
 }
 
 static int is_table_row_start(const unsigned char *line, bufsize_t len) {
+  /* Normal table rows always begin with double pipes after optional spaces. */
   bufsize_t i = skip_spaces(line, len, 0);
   return (i + 1 < len && line[i] == '|' && line[i + 1] == '|');
 }
 
 static int is_table_caption_start(const unsigned char *line, bufsize_t len) {
+  /* Caption syntax starts with a single pipe and has a second pipe before cells. */
   bufsize_t i = skip_spaces(line, len, 0);
   if (i + 2 >= len || line[i] != '|' || line[i + 1] == '|') {
     return 0;
@@ -383,12 +440,14 @@ static int is_table_line_start(const unsigned char *line, bufsize_t len) {
 }
 
 static int is_comment_only_line(const unsigned char *line, bufsize_t len) {
+  /* Block comments can be indented; table-cell visible comments are handled later. */
   bufsize_t i = skip_spaces(line, len, 0);
   return i + 1 < len && line[i] == '#' && line[i + 1] == '#';
 }
 
 static int count_token(const unsigned char *line, bufsize_t len, const char *token,
                        bufsize_t token_len) {
+  /* Simple non-overlapping delimiter count used for brace-depth bookkeeping. */
   int count = 0;
   if (token_len == 0 || len < token_len) {
     return 0;
@@ -405,6 +464,7 @@ static int count_token(const unsigned char *line, bufsize_t len, const char *tok
 static bufsize_t find_block_token_in_range(const unsigned char *line, bufsize_t start,
                                            bufsize_t end, const char *token,
                                            bufsize_t token_len) {
+  /* Local byte-range search; returns -1 so callers can use bufsize_t consistently. */
   if (line == NULL || token == NULL || token_len <= 0 || start >= end) {
     return -1;
   }
@@ -418,6 +478,14 @@ static bufsize_t find_block_token_in_range(const unsigned char *line, bufsize_t 
   return -1;
 }
 
+/**
+ * @brief Count wiki and non-wiki triple-brace depth changes on one line.
+ *
+ * We track {{{#!wiki}}} separately from other {{{...}}} blocks because wiki
+ * blocks are block containers while syntax/style/literal braces can appear
+ * inside them.  A close token first satisfies non-wiki depth; only then can it
+ * close a wiki block.
+ */
 static void scan_wiki_line_depth(const unsigned char *line, bufsize_t len, int nonwiki_initial,
                                  int *wiki_starts, int *wiki_ends, int *nonwiki_final) {
   if (wiki_starts != NULL) {
@@ -489,6 +557,7 @@ static int is_inline_advanced_text_start(const unsigned char *line, bufsize_t le
 }
 
 static int line_looks_like_block_start(const unsigned char *line, bufsize_t len) {
+  /* Used to stop multiline inline spans before they swallow a new block. */
   if (line == NULL || len <= 0) {
     return 0;
   }
@@ -528,6 +597,7 @@ static int line_looks_like_block_start(const unsigned char *line, bufsize_t len)
 }
 
 static int is_line_only_advanced_end(const unsigned char *line, bufsize_t len) {
+  /* Standalone }}} closes an advanced block without contributing content. */
   bufsize_t start = skip_spaces(line, len, 0);
   bufsize_t end = len;
   while (end > start && line[end - 1] == ' ') {
@@ -537,6 +607,7 @@ static int is_line_only_advanced_end(const unsigned char *line, bufsize_t len) {
 }
 
 static int starts_with_wiki_block(const unsigned char *line, bufsize_t len) {
+  /* Block-level {{{#!wiki}}} can be indented by spaces. */
   static const char prefix[] = "{{{#!wiki";
   static const bufsize_t prefix_len = sizeof(prefix) - 1;
 
@@ -549,6 +620,7 @@ static int starts_with_wiki_block(const unsigned char *line, bufsize_t len) {
 
 static int wiki_attr_name_matches(const unsigned char *name, bufsize_t name_len,
                                   const char *attr) {
+  /* Attribute names are byte-compared because grammar keywords are ASCII. */
   bufsize_t attr_len = (bufsize_t)strlen(attr);
   return name_len == attr_len && memcmp(name, attr, (size_t)attr_len) == 0;
 }
@@ -556,6 +628,7 @@ static int wiki_attr_name_matches(const unsigned char *name, bufsize_t name_len,
 static void extract_wiki_block_attribute(const unsigned char *line, bufsize_t len,
                                          const char *attr, bufsize_t *value_start,
                                          bufsize_t *value_len) {
+  /* Mirrors inline wiki attribute extraction for block-level {{{#!wiki}}}. */
   static const char prefix[] = "{{{#!wiki";
   static const bufsize_t prefix_len = sizeof(prefix) - 1;
 
@@ -624,6 +697,7 @@ static void extract_wiki_block_attribute(const unsigned char *line, bufsize_t le
 
 static void extract_wiki_block_attributes(const unsigned char *line, bufsize_t len,
                                           namumark_node *wiki) {
+  /* Store known attributes in generic node buffers consumed by renderers. */
   if (wiki == NULL) {
     return;
   }
@@ -652,6 +726,13 @@ static void extract_wiki_block_attributes(const unsigned char *line, bufsize_t l
   }
 }
 
+/**
+ * @brief Decide how many trailing }}} tokens structurally close a wiki block.
+ *
+ * Table rows can end with "}}}||" and nested literals can also end with braces.
+ * This function separates structural wiki closes from literal closes so the
+ * parser removes only the syntax wrapper and keeps example text intact.
+ */
 static int count_wiki_block_trailing_ends(const unsigned char *line, bufsize_t len,
                                           bufsize_t *content_end) {
   bufsize_t trimmed_end = len;
@@ -753,6 +834,7 @@ static int count_wiki_block_trailing_ends(const unsigned char *line, bufsize_t l
 }
 
 static int starts_with_wiki_token_at(const unsigned char *line, bufsize_t len, bufsize_t pos) {
+  /* Position-aware check used by close/reopen scans. */
   static const char token[] = "{{{#!wiki";
   static const bufsize_t token_len = sizeof(token) - 1;
   return (pos + token_len <= len && memcmp(line + pos, token, (size_t)token_len) == 0);
@@ -881,6 +963,7 @@ static int find_wiki_tail_after_current_close(const unsigned char *line, bufsize
 }
 
 static int line_ends_with_table_sep(const unsigned char *line, bufsize_t len) {
+  /* Detect whether a table row is complete even when wiki closes precede ||. */
   if (len < 2) {
     return 0;
   }
@@ -919,6 +1002,7 @@ static int line_ends_with_table_sep(const unsigned char *line, bufsize_t len) {
 }
 
 static int line_has_trailing_table_sep(const unsigned char *line, bufsize_t len) {
+  /* Faster suffix check for branches that only need to know whether || trails. */
   if (len < 2) {
     return 0;
   }
@@ -938,6 +1022,7 @@ static int line_has_trailing_table_sep(const unsigned char *line, bufsize_t len)
 }
 
 static int is_empty_table_row_line(const unsigned char *line, bufsize_t len) {
+  /* A bare || line closes certain multiline table-row examples. */
   bufsize_t start = skip_spaces(line, len, 0);
   bufsize_t end = len;
   while (end > start && line[end - 1] == ' ') {
@@ -947,6 +1032,7 @@ static int is_empty_table_row_line(const unsigned char *line, bufsize_t len) {
 }
 
 static int table_content_ends_with_wiki_close(const namumark_node *table) {
+  /* Helps distinguish a row-ending || from a wiki close followed by ||. */
   if (table == NULL || table->content.size < 3) {
     return 0;
   }
@@ -960,6 +1046,13 @@ static int table_content_ends_with_wiki_close(const namumark_node *table) {
          table->content.ptr[end - 1] == '}';
 }
 
+/**
+ * @brief Update nested advanced depth while collecting a table row.
+ *
+ * A table cell may contain {{{#!wiki}}}, {{{#!folding}}}, or a literal table
+ * example.  While any of those are open, lines beginning with || belong to the
+ * cell, not to the outer document table.
+ */
 static void update_table_wiki_depth(namumark_parser *parser, const unsigned char *line,
                                     bufsize_t len) {
   int starts = 0;
@@ -980,6 +1073,7 @@ static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigne
 
 static void append_text_tail_as_block(namumark_parser *parser, const unsigned char *line,
                                       bufsize_t len) {
+  /* Tail text after a same-line close is parsed immediately as its own block. */
   if (parser == NULL || line == NULL || len <= 0) {
     return;
   }
@@ -992,6 +1086,7 @@ static void append_text_tail_as_block(namumark_parser *parser, const unsigned ch
 
 static void process_advanced_close_tail(namumark_parser *parser, const unsigned char *tail_line,
                                         bufsize_t tail_len, bufsize_t line_len) {
+  /* Dispatch the text that follows a }}} close on the same physical line. */
   if (parser == NULL || tail_line == NULL || tail_len <= 0) {
     return;
   }
@@ -1054,6 +1149,7 @@ static void process_advanced_close_tail(namumark_parser *parser, const unsigned 
 
 static bufsize_t find_advanced_close_on_line(const unsigned char *line, bufsize_t len,
                                              int initial_depth) {
+  /* Find an inline close while respecting nested triple-brace depth. */
   if (line == NULL || len < 3 || initial_depth <= 0) {
     return -1;
   }
@@ -1081,6 +1177,7 @@ static bufsize_t find_advanced_close_on_line(const unsigned char *line, bufsize_
 
 static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigned char *line,
                                           bufsize_t len) {
+  /* Open {{{#!wiki}}} from a full line or from tail text after a previous close. */
   if (parser == NULL || line == NULL || len <= 0) {
     return;
   }
@@ -1109,10 +1206,16 @@ static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigne
 }
 
 namumark_node *make_document(void) {
+  /* Documents use a normal node so renderers can share tree traversal code. */
   return make_block(NAMUMARK_NODE_DOCUMENT, 1, 1);
 }
 
 void process_line(namumark_parser *parser) {
+  /*
+   * The order of branches is part of the grammar.  Open containers are handled
+   * before recognizing new block starts; otherwise nested table rows and same
+   * line wiki closes would escape their owning block.
+   */
   if (parser == NULL || parser->root == NULL) {
     return;
   }
@@ -1127,6 +1230,7 @@ void process_line(namumark_parser *parser) {
 
   parser->last_line_length = parser->current_line.size;
 
+  /* Redirect documents ignore everything after the redirect target. */
   if (parser->ignore_remaining_lines) {
     strbuf_clear(&parser->current_line);
     return;
@@ -1135,6 +1239,7 @@ void process_line(namumark_parser *parser) {
   const unsigned char *line = parser->current_line.ptr;
   bufsize_t len = parser->current_line.size;
 
+  /* Empty lines either belong to an open container or split ordinary tables. */
   if (len == 0) {
     /*
      * Blank lines inside {{{#!wiki}}} are content.  They are especially
@@ -1178,9 +1283,16 @@ void process_line(namumark_parser *parser) {
   bufsize_t start = 0;
   bufsize_t end = len;
 
+  /* Continue or close a block-level {{{#!wiki}}} before testing new blocks. */
   if (parser->wiki_block_depth > 0 && parser->wiki_block_node != NULL) {
+    /*
+     * Open {{{#!wiki}}} blocks receive first chance at every non-empty line.
+     * They may close, reopen another wiki block on the same line, or emit tail
+     * text such as [clearfix] after the close.
+     */
     bufsize_t reopen_content_end = 0;
     bufsize_t reopen_tail_start = 0;
+    /* Handle "}}} {{{#!wiki ..." where one wiki block closes and another opens. */
     if (find_wiki_reopen_after_current_close(line, len, parser->wiki_block_depth,
                                              parser->wiki_nonwiki_depth,
                                              &reopen_content_end, &reopen_tail_start)) {
@@ -1204,6 +1316,7 @@ void process_line(namumark_parser *parser) {
 
     bufsize_t tail_content_end = 0;
     bufsize_t tail_start = 0;
+    /* Handle "}}}[macro]" tails that must render outside the closing wiki block. */
     if (find_wiki_tail_after_current_close(line, len, parser->wiki_block_depth,
                                            parser->wiki_nonwiki_depth,
                                            &tail_content_end, &tail_start)) {
@@ -1226,6 +1339,7 @@ void process_line(namumark_parser *parser) {
     }
 
     bufsize_t s = skip_spaces(line, len, 0);
+    /* A line beginning with a close may immediately start the next wiki block. */
     if (parser->wiki_block_depth == 1 && s + 3 <= len && memcmp(line + s, "}}}", 3) == 0) {
       bufsize_t after = s + 3;
       while (after < len && line[after] == ' ') {
@@ -1292,6 +1406,7 @@ void process_line(namumark_parser *parser) {
       }
     }
 
+    /* Preserve closes for nested non-wiki advanced blocks, such as #!style. */
     if (starts == 0 && ends == 0 && nonwiki_depth_before > 0 &&
         is_line_only_advanced_end(line + content_start, content_end - content_start)) {
       scan_wiki_line_depth(line + content_start, content_end - content_start,
@@ -1359,7 +1474,13 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Continue an open block preformatted section. */
   if (parser->advanced_brace_depth > 0 && parser->advanced_text_node != NULL) {
+    /*
+     * Block preformatted text uses brace depth instead of line prefixes.  The
+     * close may be alone or followed by more inline/block text, so tail handling
+     * is shared with the wiki-close path.
+     */
     bufsize_t adv_start = skip_spaces(line, len, 0);
     if (parser->advanced_brace_depth == 1 && adv_start + 3 <= len &&
         memcmp(line + adv_start, "}}}", 3) == 0) {
@@ -1433,7 +1554,13 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Continue a multiline inline advanced span unless a new block interrupts it. */
   if (parser->inline_advanced_depth > 0 && parser->inline_text_node != NULL) {
+    /*
+     * Multiline inline advanced text continues until either braces balance or a
+     * new block clearly begins.  This prevents an unclosed inline literal from
+     * swallowing a following table or heading.
+     */
     if (line_looks_like_block_start(line, len)) {
       parse_inlines(&parser->inline_text_node->content, parser->inline_text_node,
                     parser->line_number);
@@ -1461,6 +1588,7 @@ void process_line(namumark_parser *parser) {
     }
   }
 
+  /* Preserve an empty row line that closes a table continuation. */
   if (parser->table_continuation && parser->root->last_child != NULL &&
       parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
       is_empty_table_row_line(line, len) &&
@@ -1478,6 +1606,7 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Append physical continuation lines to the previous table row. */
   if (parser->table_continuation && parser->root->last_child != NULL &&
       parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
       ((!is_table_line_start(line, len) && line[skip_spaces(line, len, 0)] != '|') ||
@@ -1498,6 +1627,7 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Drop table-between comments without treating them as blank table splitters. */
   if (is_comment_only_line(line, len)) {
     /*
      * A comment line between table rows is absent for rendering and should not
@@ -1510,6 +1640,7 @@ void process_line(namumark_parser *parser) {
     }
   }
 
+  /* Redirects are only valid as the first parsed line. */
   if (parser->line_number == 1 && parse_redirect_line(line, len, &start, &end)) {
     namumark_node *redirect = append_block_text(parser, NAMUMARK_NODE_REDIRECT, line + start, end - start);
     set_block_target(redirect, line + start, end - start);
@@ -1518,18 +1649,21 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Category declarations are document metadata and do not render as body text. */
   if (parse_category_line(line, len, &start, &end)) {
     append_document_category(parser->root, line + start, end - start);
     strbuf_clear(&parser->current_line);
     return;
   }
 
+  /* Open a block-level {{{#!wiki}}} container. */
   if (starts_with_wiki_block(line, len)) {
     open_wiki_block_from_fragment(parser, line, len);
     strbuf_clear(&parser->current_line);
     return;
   }
 
+  /* Column-zero unclosed bare triple braces start a preformatted block. */
   if (is_inline_advanced_text_start(line, len) && skip_spaces(line, len, 0) == 0) {
     namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
     if (pre != NULL) {
@@ -1578,6 +1712,7 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Four to nine dashes form a horizontal rule. */
   if (is_horizontal_rule_line(line, len)) {
     append_block_text(parser, NAMUMARK_NODE_HORIZONTAL_RULE, NULL, 0);
     strbuf_clear(&parser->current_line);
@@ -1586,6 +1721,7 @@ void process_line(namumark_parser *parser) {
 
   int is_folded = 0;
   int heading_level = parse_heading_level(line, len, &start, &end, &is_folded);
+  /* Symmetric heading fences produce heading blocks. */
   if (heading_level > 0) {
     namumark_node *heading = append_block_text(parser, NAMUMARK_NODE_HEADING, line + start, end - start);
     if (heading != NULL) {
@@ -1603,6 +1739,7 @@ void process_line(namumark_parser *parser) {
   }
 
   int quote_depth = 0;
+  /* A leading > creates a blockquote with recorded nesting depth. */
   if (parse_blockquote_prefix(line, len, &start, &quote_depth)) {
     namumark_node *quote = append_block_text(parser, NAMUMARK_NODE_BLOCKQUOTE, line + start, len - start);
     if (quote != NULL) {
@@ -1621,6 +1758,7 @@ void process_line(namumark_parser *parser) {
   int indent_level = 0;
   namumark_list_marker_type marker_type = NAMUMARK_LIST_MARKER_NONE;
   int start_number = 1;
+  /* Lists keep marker and indent metadata for renderer-side nesting. */
   if (parse_list_prefix(line, len, &start, &indent_level, &marker_type, &start_number)) {
     namumark_node *list = append_block_text(parser, NAMUMARK_NODE_LIST, NULL, 0);
     if (list != NULL) {
@@ -1655,6 +1793,7 @@ void process_line(namumark_parser *parser) {
   bufsize_t label_end = 0;
   bufsize_t text_start = 0;
   bufsize_t text_end = 0;
+  /* Block footnote definitions are parsed before generic table/text handling. */
   if (parse_footnote_definition(line, len, &label_start, &label_end, &text_start, &text_end)) {
     namumark_node *footnote = append_block_text(parser, NAMUMARK_NODE_FOOTNOTE_DEFINITION,
                                                 line + text_start, text_end - text_start);
@@ -1671,7 +1810,12 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
+  /* Start or append a document-level table row/caption. */
   if (is_table_line_start(line, len)) {
+    /*
+     * Table recognition comes after open-container handling.  At this point a
+     * row start belongs to the document table, not to a nested wiki/folding cell.
+     */
     if (!parser->table_continuation && is_empty_table_row_line(line, len) &&
         parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_TABLE) {
       namumark_node *table = parser->root->last_child;
@@ -1717,6 +1861,7 @@ void process_line(namumark_parser *parser) {
   parser->table_wiki_block_depth = 0;
   parser->table_wiki_nonwiki_depth = 0;
 
+  /* Fallback: ordinary paragraph text, possibly with a multiline inline span. */
   namumark_node *text = append_block_text(parser, NAMUMARK_NODE_TEXT, line, len);
   if (text != NULL) {
     int opens = count_token(line, len, "{{{", 3);
@@ -1733,6 +1878,7 @@ void process_line(namumark_parser *parser) {
 }
 
 static void finalize_tree(namumark_node *node, int line_number, int column) {
+  /* Fill missing end positions for nodes that were still open at EOF. */
   if (node == NULL) {
     return;
   }
@@ -1754,6 +1900,7 @@ static void finalize_tree(namumark_node *node, int line_number, int column) {
 }
 
 namumark_node *finalize(namumark_parser *parser, namumark_node *block) {
+  /* Finalize a single block and return its parent for stack-like callers. */
   if (block == NULL) {
     return NULL;
   }
@@ -1768,6 +1915,7 @@ namumark_node *finalize(namumark_parser *parser, namumark_node *block) {
 }
 
 namumark_node *finalize_document(namumark_parser *parser) {
+  /* The parser transfers root ownership to the caller after this point. */
   if (parser == NULL || parser->root == NULL) {
     return NULL;
   }

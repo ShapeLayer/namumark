@@ -15,6 +15,7 @@
 #include "node.h"
 
 static inline bool S_is_line_end_char(unsigned char c) {
+  /* Keep the public wrapper tiny while tests can exercise the same predicate. */
   return c == '\n' || c == '\r';
 }
 
@@ -23,6 +24,7 @@ bool is_line_end_char(unsigned char c) {
 }
 
 static bool starts_with_at(const strbuf *source, bufsize_t pos, const char *token) {
+  /* Byte-level prefix check used by every delimiter branch. */
   bufsize_t token_len = (bufsize_t)strlen(token);
   if (source == NULL || token == NULL || token_len == 0) {
     return false;
@@ -34,14 +36,21 @@ static bool starts_with_at(const strbuf *source, bufsize_t pos, const char *toke
 }
 
 static int is_ascii_alpha(unsigned char c) {
+  /* Color aliases and keywords are ASCII grammar tokens. */
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
 static int is_ascii_hex(unsigned char c) {
+  /* Hex colors are parsed byte-wise before UTF-8 text matters. */
   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 static int is_valid_color_spec(const unsigned char *value, bufsize_t len) {
+  /*
+   * Color advanced syntax accepts both #rgb/#rrggbb and named aliases.  Only
+   * the primary color is validated here; a comma-separated dark-mode color is
+   * carried through to the renderer as data-dark-style.
+   */
   if (value == NULL || len <= 0) {
     return 0;
   }
@@ -86,12 +95,18 @@ check_alias:
 }
 
 static int attr_name_matches(const unsigned char *name, bufsize_t name_len, const char *attr) {
+  /* {{{#!wiki}}} attribute names are ASCII and case-sensitive. */
   bufsize_t attr_len = (bufsize_t)strlen(attr);
   return name_len == attr_len && memcmp(name, attr, (size_t)attr_len) == 0;
 }
 
 static void extract_wiki_attr(const unsigned char *text, bufsize_t len, const char *attr,
                               bufsize_t *value_start, bufsize_t *value_len) {
+  /*
+   * {{{#!wiki}}} attributes are parsed from the opening line only.  Values may
+   * be quoted or unquoted, but they never span newlines; the rest of the block is
+   * content and must not be scanned as attributes.
+   */
   *value_start = 0;
   *value_len = 0;
 
@@ -151,6 +166,7 @@ static void extract_wiki_attr(const unsigned char *text, bufsize_t len, const ch
 }
 
 static bufsize_t find_token(const strbuf *source, const char *token, bufsize_t from) {
+  /* Generic forward search for non-nesting inline delimiters. */
   bufsize_t token_len = (bufsize_t)strlen(token);
   if (token_len == 0 || from < 0 || from >= source->size) {
     return -1;
@@ -165,6 +181,11 @@ static bufsize_t find_token(const strbuf *source, const char *token, bufsize_t f
 }
 
 static bufsize_t find_link_close(const strbuf *source, bufsize_t open_pos) {
+  /*
+   * Links can contain nested links in labels, and escaped brackets must not end
+   * the outer link.  The depth counter keeps constructs like [[file|[[label]]]]
+   * as one link node instead of two broken anchors.
+   */
   if (source == NULL || open_pos < 0 || open_pos + 2 > source->size) {
     return -1;
   }
@@ -201,6 +222,11 @@ static bufsize_t find_advanced_close(const strbuf *source, bufsize_t open_pos);
 static bool find_macro_close(const strbuf *source, bufsize_t open_bracket, bufsize_t *close_out);
 
 static bufsize_t find_footnote_close(const strbuf *source, bufsize_t open_pos) {
+  /*
+   * Footnote bodies are inline mini-documents.  Their closing ']' must ignore
+   * nested links, macros, and triple-brace advanced sections so references like
+   * [* [[Page|label]] text] do not stop at the link's bracket.
+   */
   if (source == NULL || open_pos < 0 || open_pos + 2 > source->size) {
     return -1;
   }
@@ -246,6 +272,11 @@ static bufsize_t find_footnote_close(const strbuf *source, bufsize_t open_pos) {
 }
 
 static bufsize_t find_advanced_close(const strbuf *source, bufsize_t open_pos) {
+  /*
+   * Advanced {{{...}}} syntax nests by brace count.  This is used for literal
+   * examples containing another {{{#!wiki}}}; stopping at the first close would
+   * leak braces or split examples in documentation tables.
+   */
   if (source == NULL || open_pos < 0 || open_pos + 3 > source->size) {
     return -1;
   }
@@ -274,6 +305,7 @@ static bufsize_t find_advanced_close(const strbuf *source, bufsize_t open_pos) {
 
 static void append_text_segment(const strbuf *source, bufsize_t start, bufsize_t len,
                                 namumark_node *parent, int line_number) {
+  /* Preserve plain text as explicit nodes so AST JSON can show parser splits. */
   if (source == NULL || parent == NULL || len <= 0) {
     return;
   }
@@ -293,6 +325,7 @@ static void append_text_segment(const strbuf *source, bufsize_t start, bufsize_t
 static void append_node_from_range(namumark_node_type node_type, const strbuf *source,
                                    bufsize_t start, bufsize_t len,
                                    namumark_node *parent, int line_number) {
+  /* Helper for syntax spans whose raw body still needs subtype parsing. */
   namumark_node *node = namumark_node_new(node_type, line_number, (int)start + 1);
   if (node == NULL) {
     return;
@@ -306,6 +339,7 @@ static void append_node_from_range(namumark_node_type node_type, const strbuf *s
 }
 
 static void parse_last_child_inlines(namumark_node *parent, int line_number) {
+  /* Emphasis nodes can contain nested inline syntax. */
   if (parent == NULL || parent->last_child == NULL) {
     return;
   }
@@ -315,6 +349,12 @@ static void parse_last_child_inlines(namumark_node *parent, int line_number) {
 }
 
 static void unescape_link_text(strbuf *out, const unsigned char *text, bufsize_t len) {
+  /*
+   * Link targets use backslash as an escape for otherwise structural characters.
+   * The renderer works with normalized targets so file names such as
+   * 파일:\#name.jpg and document links such as S\#ARP render as their visible
+   * document names.
+   */
   strbuf_clear(out);
   for (bufsize_t i = 0; i < len; i++) {
     if (text[i] == '\\' && i + 1 < len) {
@@ -332,6 +372,11 @@ static void unescape_link_text(strbuf *out, const unsigned char *text, bufsize_t
 }
 
 static void normalize_link_target(strbuf *target, strbuf *display) {
+  /*
+   * NamuMark has several target spelling conveniences: trailing '#' can escape
+   * a literal hash, '문서:' is an explicit namespace prefix, and section suffixes
+   * such as #s-2 should remain in href while disappearing from the default label.
+   */
   if (target == NULL || target->size == 0) {
     return;
   }
@@ -371,6 +416,7 @@ static void normalize_link_target(strbuf *target, strbuf *display) {
 }
 
 static void parse_link_target(namumark_node *node) {
+  /* Split [[target|label]], normalize target spelling, then classify link kind. */
   if (node == NULL || node->content.size <= 0) {
     return;
   }
@@ -408,6 +454,11 @@ static void parse_link_target(namumark_node *node) {
 }
 
 static void parse_macro_content(namumark_node *node) {
+  /*
+   * Macro target and args are split once here.  Renderers decide which targets
+   * deserve special HTML.  Unknown targets intentionally keep macro_type NONE so
+   * they can fall back to visible bracket text instead of silently disappearing.
+   */
   if (node == NULL || node->content.size <= 0) {
     return;
   }
@@ -451,6 +502,12 @@ static void parse_macro_content(namumark_node *node) {
 }
 
 static void parse_advanced_content(namumark_node *node) {
+  /*
+   * Advanced nodes all share the same triple-brace delimiters, so the first
+   * token inside the braces selects the subtype.  {{{#!wiki}}} also extracts
+   * attributes here because both block and inline wiki renderers need the same
+   * style/class/onClick/tag metadata.
+   */
   if (node == NULL || node->content.size == 0) {
     return;
   }
@@ -529,6 +586,11 @@ static void parse_advanced_content(namumark_node *node) {
 }
 
 static bool find_macro_close(const strbuf *source, bufsize_t open_bracket, bufsize_t *close_out) {
+  /*
+   * Macro recognition is intentionally broad; unknown macros are rendered back
+   * as literal [text].  This allows known forms like [ruby(...)] and [youtube]
+   * to be recognized without breaking prose examples such as [v] or [A].
+   */
   if (source == NULL || close_out == NULL) {
     return false;
   }
@@ -577,6 +639,11 @@ static bool find_macro_close(const strbuf *source, bufsize_t open_bracket, bufsi
 }
 
 void parse_inlines(const strbuf *source, namumark_node *parent, int line_number) {
+  /*
+   * The scan is single-pass and appends plain text before each recognized span.
+   * Ordering matters: footnotes and links must be tested before generic macros,
+   * and escapes must be consumed before any delimiter checks.
+   */
   if (source == NULL || parent == NULL) {
     return;
   }
@@ -585,6 +652,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
   bufsize_t plain_start = 0;
 
   while (i < source->size) {
+    /* Backslash escapes punctuation before any delimiter can claim it. */
     if (source->ptr[i] == '\\' && i + 1 < source->size && ispunct((unsigned char)source->ptr[i + 1])) {
       append_text_segment(source, plain_start, i - plain_start, parent, line_number);
       append_text_segment(source, i + 1, 1, parent, line_number);
@@ -593,6 +661,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       continue;
     }
 
+    /* Triple braces cover inline literals, colors/sizing, and inline #!wiki blocks. */
     if (starts_with_at(source, i, "{{{")) {
       bufsize_t close = find_advanced_close(source, i);
       if (close >= 0) {
@@ -608,6 +677,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* A line-start ## is a real comment; indented ## is handled as visible text. */
     if (i == 0 && starts_with_at(source, i, "##")) {
       append_text_segment(source, plain_start, i - plain_start, parent, line_number);
       append_node_from_range(NAMUMARK_NODE_COMMENT, source, i + 2, source->size - (i + 2),
@@ -620,6 +690,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       return;
     }
 
+    /* Links are checked before macros because both begin with '['. */
     if (starts_with_at(source, i, "[[")) {
       bufsize_t close = find_link_close(source, i);
       if (close >= 0) {
@@ -635,6 +706,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Inline footnotes may contain nested links/macros, so they need a custom close scan. */
     if (starts_with_at(source, i, "[*")) {
       bufsize_t close = find_footnote_close(source, i);
       if (close >= 0) {
@@ -647,6 +719,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Math-like raw spans use XML-looking delimiters rather than bracket macros. */
     if (starts_with_at(source, i, "<math>")) {
       bufsize_t close = find_token(source, "</math>", i + 6);
       if (close >= 0) {
@@ -664,6 +737,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Generic bracket macros are parsed after all more specific bracket forms. */
     if (source->ptr[i] == '[') {
       bufsize_t close = -1;
       if (find_macro_close(source, i, &close)) {
@@ -679,6 +753,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Strong emphasis must be checked before italic because both start with ''. */
     if (starts_with_at(source, i, "'''")) {
       bufsize_t close = find_token(source, "'''", i + 3);
       if (close >= 0) {
@@ -692,6 +767,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Italic text uses a double apostrophe pair. */
     if (starts_with_at(source, i, "''")) {
       bufsize_t close = find_token(source, "''", i + 2);
       if (close >= 0) {
@@ -705,6 +781,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Underline is parsed after emphasis so apostrophe delimiters keep priority. */
     if (starts_with_at(source, i, "__")) {
       bufsize_t close = find_token(source, "__", i + 2);
       if (close >= 0) {
@@ -718,6 +795,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Both ~~text~~ and --text-- map to strikethrough. */
     if (starts_with_at(source, i, "~~")) {
       bufsize_t close = find_token(source, "~~", i + 2);
       if (close >= 0) {
@@ -731,6 +809,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Hyphen strikethrough is checked after horizontal rules have already been handled by blocks.c. */
     if (starts_with_at(source, i, "--")) {
       bufsize_t close = find_token(source, "--", i + 2);
       if (close >= 0) {
@@ -744,6 +823,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Superscript and subscript are the final paired inline delimiters. */
     if (starts_with_at(source, i, "^^")) {
       bufsize_t close = find_token(source, "^^", i + 2);
       if (close >= 0) {
@@ -757,6 +837,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /* Subscript uses doubled commas; unmatched commas remain plain text. */
     if (starts_with_at(source, i, ",,")) {
       bufsize_t close = find_token(source, ",,", i + 2);
       if (close >= 0) {
