@@ -1,3 +1,7 @@
+/**
+ * @file main.c
+ * @brief Command-line driver for rendering NamuMark files as HTML or AST JSON.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +22,7 @@ static void print_usage(void) {
 int main(int argc, char *argv[]) {
   int i, file_counts = 0;
   int output_ast = 0;
+  /* Initialized before option handling because --help/--version jump to cleanup. */
   char **files = NULL;
   unsigned char buffer[4096];
   size_t bytes;

@@ -1,5 +1,12 @@
 'use strict';
 
+/*
+ * Node.js FFI binding for the stable namumark C API.
+ * Koffi is used instead of ffi-napi because it supports current Node releases
+ * without compiling a project-specific native addon.  The C API still owns the
+ * render buffer; JavaScript decodes it and frees it in the finally block.
+ */
+
 const koffi = require('koffi');
 const path = require('path');
 const fs = require('fs');
@@ -14,6 +21,7 @@ koffi.struct('namumark_buffer', {
 });
 
 function defaultLibraryPath() {
+  /* Prefer the CMake build tree so examples work without installation. */
   const root = path.resolve(__dirname, '..', '..');
   const candidates = [
     path.join(root, 'build', 'libnamumark.dylib'),
@@ -38,6 +46,7 @@ class Namumark {
   }
 
   render(input, outputFormat = NAMUMARK_OUTPUT_HTML) {
+    /* Buffer.byteLength equals the C input size because the native API accepts bytes. */
     const data = Buffer.isBuffer(input) ? input : Buffer.from(String(input), 'utf8');
     const output = {};
     const status = this.lib.render(data, data.length, outputFormat, output);

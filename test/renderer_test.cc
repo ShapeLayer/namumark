@@ -1792,6 +1792,70 @@ TEST(RendererTest, WikiBlockTableCellLiteralAndRenderedTableList) {
   parser_free(parser);
 }
 
+TEST(RendererTest, TableCellWikiKeepsBlankSeparatedInnerTablesAndFollowingClearfix) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<tablewidth=100%><tablebordercolor=#00A495,#2d2f34><tablebgcolor=#fff,#1f2023><colbgcolor=#00A495,#010101><colcolor=#fff,#eee><width=60px> '''{{{#fff,#eee 문법}}}''' ||{{{#!folding [ 문법 펼치기 · 접기 ]\n"
+      "{{{||<tablealign=right> '''1번 테이블''' ||\n"
+      "|| 내용내용내용내용내용내용내용내용내용 ||\n"
+      "|| blahblahblahblahblahblahblahblah ||\n"
+      "|| [[로렘 입섬|Lorem ipsum, dolor sit amet.]] ||\n"
+      "\n"
+      "||<tablealign=right> '''2번 테이블''' ||\n"
+      "|| 내용내용내용내용내용내용내용내용내용 ||\n"
+      "|| blahblahblahblahblahblahblahblah ||\n"
+      "|| [[로렘 입숨|Lorem ipsum, dolor sit amet.]] ||}}}}}}||\n"
+      "|| '''결과''' ||{{{#!wiki\n"
+      "||<tablealign=right> '''1번 테이블''' ||\n"
+      "|| 내용내용내용내용내용내용내용내용내용 ||\n"
+      "|| blahblahblahblahblahblahblahblah ||\n"
+      "|| [[로렘 입숨|Lorem ipsum, dolor sit amet.]] ||\n"
+      "\n"
+      "||<tablealign=right> '''2번 테이블''' ||\n"
+      "|| 내용내용내용내용내용내용내용내용내용 ||\n"
+      "|| blahblahblahblahblahblahblahblah ||\n"
+      "|| [[로렘 입숨|Lorem ipsum, dolor sit amet.]] ||}}}||\n"
+      "[clearfix]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_EQ(doc->first_child->type, NAMUMARK_NODE_TABLE);
+  ASSERT_NE(doc->first_child->next, nullptr);
+  EXPECT_EQ(doc->first_child->next->type, NAMUMARK_NODE_TEXT);
+  EXPECT_EQ(doc->first_child->next->next, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  size_t outer_table = html.find("<table class=\"nm-table\" style=\"width:100%;background-color:#fff;border:2px solid #00A495;\">");
+  ASSERT_NE(outer_table, std::string::npos);
+  EXPECT_NE(html.find("<details class=\"nm-folding\"><summary>[ 문법 펼치기 · 접기 ]</summary><div><pre><code>"), std::string::npos);
+  EXPECT_NE(html.find("1번 테이블"), std::string::npos);
+  EXPECT_NE(html.find("2번 테이블"), std::string::npos);
+  size_t first_inner = html.find("<table class=\"nm-table\" style=\"left:auto;\">", outer_table + 1);
+  ASSERT_NE(first_inner, std::string::npos);
+  size_t second_inner = html.find("<table class=\"nm-table\" style=\"left:auto;\">", first_inner + 1);
+  EXPECT_NE(second_inner, std::string::npos);
+  EXPECT_NE(html.find("</tbody></table>\n<table class=\"nm-table\" style=\"left:auto;\">", first_inner), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-clearfix\"></div>"), std::string::npos);
+  EXPECT_EQ(html.find("}}}</div>"), std::string::npos);
+  EXPECT_EQ(html.find("}}}}}}</div>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, WikiBlockTableListDocumentationCases) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

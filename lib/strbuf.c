@@ -23,6 +23,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+/*
+ * This file keeps the upstream cmark-style buffer API small and predictable.
+ * Parser and renderer code store byte ranges in strbuf and track lengths
+ * explicitly, which is important because NamuMark documents are UTF-8 text but
+ * many parser decisions are byte-oriented delimiter scans.
+ */
+
 #include <assert.h>
 #include <ctype.h>
 #include <stdbool.h>

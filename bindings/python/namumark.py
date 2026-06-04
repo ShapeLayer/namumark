@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""ctypes binding for the stable namumark C API.
+
+The binding mirrors the C ownership model: rendering returns a heap buffer owned
+by the library, Python copies it into a str, and the finally block always calls
+namumark_buffer_free().  Keeping the ownership story explicit avoids leaks when
+exceptions are raised after a successful native render.
+"""
+
 import ctypes
 import os
 from pathlib import Path
@@ -11,10 +19,13 @@ NAMUMARK_OK = 0
 
 
 class NamumarkBuffer(ctypes.Structure):
+    """FFI mirror of `struct namumark_buffer` from lib/namumark.h."""
+
     _fields_ = [("data", ctypes.c_void_p), ("size", ctypes.c_size_t)]
 
 
 def _default_library_path() -> Path:
+    """Return the build-tree shared library path used during local development."""
     root = Path(__file__).resolve().parents[2]
     candidates = [
         root / "build" / "libnamumark.dylib",
@@ -44,10 +55,13 @@ def _load_library(path: str | os.PathLike[str] | None = None) -> ctypes.CDLL:
 
 
 class Namumark:
+    """Small stateful wrapper around a loaded namumark shared library."""
+
     def __init__(self, library_path: str | os.PathLike[str] | None = None) -> None:
         self._lib = _load_library(library_path)
 
     def render(self, text: str | bytes, output_format: int = NAMUMARK_OUTPUT_HTML) -> str:
+        """Render UTF-8 text and raise RuntimeError for non-OK native statuses."""
         data = text.encode("utf-8") if isinstance(text, str) else text
         output = NamumarkBuffer()
         status = self._lib.namumark_render(data, len(data), output_format, ctypes.byref(output))

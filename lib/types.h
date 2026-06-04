@@ -1,3 +1,7 @@
+/**
+ * @file types.h
+ * @brief Shared enum types used by AST nodes, parser decisions, and renderers.
+ */
 #ifndef __NAMUMARK_H__
 #define __NAMUMARK_H__
 
@@ -10,6 +14,7 @@ extern "C" {
  * Definition of namumark syntax types.
  * @see https://namu.wiki/w/나무위키:문법%20도움말
  */
+/** @brief High-level syntax node categories. */
 typedef enum {
   NAMUMARK_NODE_NONE = 0x0000,
 
@@ -45,6 +50,7 @@ typedef enum {
   NAMUMARK_NODE_ADVANCED,
 } namumark_node_type;
 
+/** @brief Subtype for triple-brace advanced nodes. */
 typedef enum {
   NAMUMARK_NODE_ADVANCED_NONE = 0x0000,
   NAMUMARK_NODE_ADVANCED_LITERAL,
@@ -58,6 +64,7 @@ typedef enum {
   NAMUMARK_NODE_ADVANCED_HTML,
 } namumark_node_advanced_type;
 
+/** @brief Known bracket macro names with specialized parser or renderer behavior. */
 typedef enum {
   NAMUMARK_NODE_MACRO_NONE = 0x0000,
   NAMUMARK_NODE_MACRO_INCLUDE,
@@ -73,6 +80,7 @@ typedef enum {
   NAMUMARK_NODE_MACRO_YOUTUBE,
 } namumark_node_macro_type;
 
+/** @brief Link target classification after normalization. */
 typedef enum {
   NAMUMARK_LINK_NONE = 0,
   NAMUMARK_LINK_INTERNAL,
@@ -83,6 +91,7 @@ typedef enum {
   NAMUMARK_LINK_RELATIVE,
 } namumark_link_type;
 
+/** @brief Ordered and unordered list marker kinds. */
 typedef enum {
   NAMUMARK_LIST_MARKER_NONE = 0,
   NAMUMARK_LIST_MARKER_BULLET,
@@ -93,6 +102,7 @@ typedef enum {
   NAMUMARK_LIST_MARKER_ROMAN_UPPER,
 } namumark_list_marker_type;
 
+/** @brief Internal state flags attached to nodes while parsing. */
 typedef enum namumark_node_internal_flags {
   NAMUMARK_NODE_OPEN = (1 << 0),
 } namumark_node_internal_flags;

@@ -1,3 +1,11 @@
+/**
+ * @file renderer_ast.c
+ * @brief Diagnostic JSON renderer for parser trees.
+ *
+ * The AST renderer intentionally prints the same generic fields on every node.
+ * That makes diffs verbose, but it lets tests inspect parser decisions without
+ * needing subtype-specific JSON schemas.
+ */
 #include <stdio.h>
 #include <string.h>
 

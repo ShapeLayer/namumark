@@ -1,3 +1,12 @@
+/**
+ * @file renderer_html.c
+ * @brief HTML renderer for the NamuMark AST.
+ *
+ * This renderer intentionally stays self-contained.  Table cells, {{{#!wiki}}}
+ * bodies, and folding blocks each behave like small block environments, so the
+ * code contains local dispatchers for those contexts rather than forcing every
+ * fragment through the top-level document parser.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -920,6 +929,11 @@ static int render_wiki_block_open(FILE *out, const char *tag, const namumark_nod
 }
 
 static const char *wiki_render_tag(const namumark_node *node, int inline_mode) {
+  /*
+   * Only tag="a" is honored.  Allowing arbitrary tags would turn a wiki style
+   * convenience into an HTML injection surface, while tag="a" is required by
+   * the documented onclick examples.
+   */
   if (node != NULL && node->tag.size == 1 && node->tag.ptr[0] == 'a') {
     return "a";
   }
@@ -964,6 +978,12 @@ static int render_style_advanced_block(FILE *out, const namumark_node *node) {
 }
 
 static int render_wrapped_literal_body(FILE *out, const strbuf *body) {
+  /*
+   * Some documentation examples wrap comment-looking text in {{{...}}}.  That
+   * text must remain a code example, not become an actual comment.  We accept
+   * only plain literal bodies here and deliberately reject #!, color, and sizing
+   * advanced forms so they continue down their specialized render paths.
+   */
   if (body == NULL || body->size < 6 || memcmp(body->ptr, "{{{", 3) != 0) {
     return 0;
   }
@@ -999,6 +1019,11 @@ static bufsize_t find_token_in_range(const unsigned char *text, bufsize_t start,
                                      bufsize_t token_len);
 
 static int render_leading_style_blocks(FILE *out, strbuf *body) {
+  /*
+   * A {{{#!style}}} block at the start of a {{{#!wiki}}} body is global CSS,
+   * not a paragraph.  We peel it off before reparsing the remainder so tab UI
+   * examples can combine style declarations with tables in the same wrapper.
+   */
   while (body != NULL && body->size >= 10 && memcmp(body->ptr, "{{{#!style", 10) == 0) {
     bufsize_t close = find_token_in_range(body->ptr, 10, body->size, "}}}", 3);
     if (close < 0) {
@@ -1077,6 +1102,12 @@ static int render_syntax_advanced_block(FILE *out, const namumark_node *node) {
 }
 
 static int wiki_body_needs_block_rendering(const strbuf *body) {
+  /*
+   * The renderer chooses between inline-flow rendering and reparsing as block
+   * content.  Tables, lists, blockquotes, headings, and unclosed literal blocks
+   * need block rendering; simple inline wrappers should preserve their original
+   * flow and line breaks.
+   */
   if (body == NULL) {
     return 0;
   }
@@ -1432,6 +1463,11 @@ static int is_row_start_line(const unsigned char *line, bufsize_t len) {
 
 static int parse_caption_line(const unsigned char *line, bufsize_t len, strbuf *caption,
                               strbuf *row) {
+  /*
+   * Convert "|caption| cells ||" into a caption plus a normal row.  This keeps
+   * the rest of the table renderer unaware of caption syntax and lowers the
+   * risk of breaking ordinary row parsing.
+   */
   bufsize_t s = 0;
   while (s < len && line[s] == ' ') {
     s++;
@@ -2108,6 +2144,13 @@ static int render_blockquote_body(FILE *out, const unsigned char *text, bufsize_
 }
 
 static int render_table_cell_content(FILE *out, const unsigned char *text, bufsize_t len) {
+  /*
+   * Table cells are a miniature block environment.  They can contain plain
+   * inline text, lists, blockquotes, literal examples, {{{#!wiki}}} wrappers,
+   * and folding blocks.  We keep the dispatcher local to cells because using
+   * the full document parser here would lose table-specific whitespace and
+   * continuation rules.
+   */
   if (len <= 0) {
     return 1;
   }
@@ -2219,12 +2262,20 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     }
 
     if (in_wiki_advanced) {
+      /*
+       * Preserve blank lines while collecting an inline {{{#!wiki}}} block in a
+       * cell.  Those blank lines later split nested tables when the wiki body is
+       * reparsed, which is why we may append two newlines for an empty line.
+       */
       if (wiki_advanced.size > 0) {
         strbuf_putc(&wiki_advanced, '\n');
       }
       bufsize_t wiki_line_end = line_end;
       if (wiki_line_end > line_start && text[wiki_line_end - 1] == '\r') {
         wiki_line_end--;
+      }
+      if (wiki_line_end == line_start) {
+        strbuf_putc(&wiki_advanced, '\n');
       }
       if (wiki_line_end > line_start) {
         strbuf_put(&wiki_advanced, text + line_start, wiki_line_end - line_start);
@@ -2255,6 +2306,11 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     }
 
     if (line_start + 1 < e && text[line_start] == '#' && text[line_start + 1] == '#') {
+      /*
+       * Only a column-zero ## is a real comment.  A line beginning with a space
+       * followed by ## is visible text, and color advanced bodies such as
+       * {{{#008000 ## text}}} must not be converted into HTML comments.
+       */
       if (line_end >= len) {
         break;
       }
@@ -3379,6 +3435,14 @@ static int render_block_node(FILE *out, const namumark_node *node) {
             strbuf_putc(&pending_row, '\n');
             strbuf_put(&pending_row, line_ptr, line_len);
           }
+        } else if (pending_row.size > 0) {
+          /*
+           * Blank physical lines can be meaningful inside a multiline table
+           * cell.  In particular, a cell-level {{{#!wiki}}} may contain two
+           * nested tables separated by a blank line; preserving it here lets the
+           * nested parser render two tables instead of merging rows.
+           */
+          strbuf_putc(&pending_row, '\n');
         }
 
         if (line_end >= tablebuf.size) {
@@ -3567,6 +3631,12 @@ static int render_block_children(FILE *out, const namumark_node *parent) {
 }
 
 static int render_onclick_runtime_script(FILE *out) {
+  /*
+   * The renderer emits data-onclick rather than raw onclick attributes.  This
+   * tiny delegated runtime is the only JavaScript needed to make the documented
+   * add/remove/toggle-class actions work, while keeping generated markup free of
+   * inline event handlers.
+   */
   static const char script[] =
       "<script>(function(){\n"
       "function validClassName(value){return /^[A-Za-z0-9_-]+$/.test(value);}\n"

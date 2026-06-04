@@ -1,3 +1,7 @@
+/**
+ * @file node.c
+ * @brief Allocation and tree-link helpers for namumark_node.
+ */
 #include <stdlib.h>
 
 #include "node.h"
@@ -20,6 +24,7 @@ namumark_node *namumark_node_new(namumark_node_type type, int start_line, int st
   node->advanced_type = NAMUMARK_NODE_ADVANCED_NONE;
   node->macro_type = NAMUMARK_NODE_MACRO_NONE;
 
+  /* Optional fields start empty; renderers decide which fields matter per type. */
   strbuf_init(&node->label, 0);
   strbuf_init(&node->target, 0);
   strbuf_init(&node->args, 0);

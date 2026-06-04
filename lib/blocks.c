@@ -373,6 +373,11 @@ static int is_table_caption_start(const unsigned char *line, bufsize_t len) {
   return 0;
 }
 
+/*
+ * Captions are table starts, but ordinary single-pipe prose is not.  This
+ * preserves the NamuMark caption form "|caption| cells ||" without swallowing
+ * a later paragraph such as "|not a table|" into the previous table.
+ */
 static int is_table_line_start(const unsigned char *line, bufsize_t len) {
   return is_table_row_start(line, len) || is_table_caption_start(line, len);
 }
@@ -460,6 +465,12 @@ static void scan_wiki_line_depth(const unsigned char *line, bufsize_t len, int n
   }
 }
 
+/*
+ * Only unclosed bare triple-brace text starts a block preformatted section.
+ * A same-line close means the construct is an inline literal, e.g.
+ * "{{{onclick}}} means ..." should become <code>onclick</code> inside a
+ * paragraph rather than a whole <pre> block.
+ */
 static int is_inline_advanced_text_start(const unsigned char *line, bufsize_t len) {
   bufsize_t start = skip_spaces(line, len, 0);
   if (start + 3 > len || memcmp(line + start, "{{{", 3) != 0) {
@@ -803,6 +814,12 @@ static int find_wiki_reopen_after_current_close(const unsigned char *line, bufsi
   return 0;
 }
 
+/*
+ * Same-line wiki tails are valid syntax.  For example, "}}}[clearfix]" closes
+ * a wiki block and then emits a macro outside it.  We split at the close so the
+ * braces do not leak into blockquote/table content.  Table row tails beginning
+ * with "||" are intentionally left for the table parser.
+ */
 static int find_wiki_tail_after_current_close(const unsigned char *line, bufsize_t len,
                                               int wiki_depth_initial,
                                               int nonwiki_depth_initial,
@@ -1119,6 +1136,35 @@ void process_line(namumark_parser *parser) {
   bufsize_t len = parser->current_line.size;
 
   if (len == 0) {
+    /*
+     * Blank lines inside {{{#!wiki}}} are content.  They are especially
+     * important because the wiki body is reparsed later, and blank lines split
+     * adjacent nested tables.
+     */
+    if (parser->wiki_block_depth > 0 && parser->wiki_block_node != NULL) {
+      if (parser->wiki_block_node->content.size > 0) {
+        strbuf_putc(&parser->wiki_block_node->content, '\n');
+      }
+      parser->wiki_block_node->end_line = parser->line_number;
+      parser->wiki_block_node->end_column = 0;
+      strbuf_clear(&parser->current_line);
+      return;
+    }
+    /*
+     * Blank lines inside table-cell advanced syntax are also content.  Folding
+     * examples often contain literal tables separated by blank lines; resetting
+     * the table depth here would make inner rows escape the outer table.
+     */
+    if (parser->table_continuation && parser->root->last_child != NULL &&
+        parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
+        (parser->table_wiki_block_depth > 0 || parser->table_wiki_nonwiki_depth > 0)) {
+      namumark_node *table = parser->root->last_child;
+      strbuf_putc(&table->content, '\n');
+      table->end_line = parser->line_number;
+      table->end_column = 0;
+      strbuf_clear(&parser->current_line);
+      return;
+    }
     if (parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_TABLE) {
       parser->table_interrupted_by_blank = true;
     }
@@ -1453,6 +1499,11 @@ void process_line(namumark_parser *parser) {
   }
 
   if (is_comment_only_line(line, len)) {
+    /*
+     * A comment line between table rows is absent for rendering and should not
+     * behave like a blank line that splits the table.  Outside table context we
+     * keep the old AST behavior and let the inline parser produce a comment.
+     */
     if (parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_TABLE) {
       strbuf_clear(&parser->current_line);
       return;

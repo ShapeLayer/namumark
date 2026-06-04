@@ -1,0 +1,69 @@
+<!-- https://users.ece.cmu.edu/~eno/coding/CCodingStandard.html#documentation -->
+<h1>Documentation </h1>
+<h2>Comments Should Tell a Story </h2>Consider your comments a story describing 
+the system. Expect your comments to be extracted by a robot and formed into a 
+man page. Class comments are one part of the story, method signature comments 
+are another part of the story, method arguments another part, and method 
+implementation yet another part. All these parts should weave together and 
+inform someone else at another point of time just exactly what you did and why.
+<h2>Document Decisions </h2>Comments should document decisions. At every point 
+where you had a choice of what to do place a comment describing which choice you 
+made and why. Archeologists will find this the most useful information.
+<h2>Use Headers </h2>Use a document extraction system like <a href="http://www.doxygen.org">Doxygen</a>. 
+These headers are structured in such a way as they can be parsed and 
+extracted. They are not useless like normal headers. So take time to fill them 
+out. If you do it right once no more documentation may be necessary.
+<h2>Comment Layout </h2>Each part of the project has a specific comment layout.
+<a href="http://www.doxygen.org">Doxygen</a> has the recommended
+format for the comment layouts.
+<h2>Make Gotchas Explicit </h2>Explicitly comment variables changed out of the 
+normal control flow or other code likely to break during maintenance. Embedded 
+keywords are used to point out issues and potential problems. Consider a robot 
+will parse your comments looking for keywords, stripping them out, and making a 
+report so people can make a special effort where needed. 
+<h3>Gotcha Keywords </h3>
+<ul>
+<li><b>@author:</b><br> specifies the author of the module 
+</li><li><b>@version:</b><br> specifies the version of the module 
+</li><li><b>@param:</b><br> specifies a parameter into a function 
+</li><li><b>@return:</b><br> specifies what a function returns 
+</li><li><b>@deprecated:</b><br> says that a function is not to be used anymore 
+</li><li><b>@see:</b><br> creates a link in the documentation to the 
+file/function/variable to consult to get a better understanding on what the current block of code does. 
+</li><li><b>@todo:</b><br> what remains to be done
+</li><li><b>@bug:</b><br> report a bug found in the piece of code
+</li></ul>
+<h3>Gotcha Formatting </h3>
+<ul>
+<li>Make the gotcha keyword the first symbol in the comment. 
+</li><li>Comments may consist of multiple lines, but the first line should be a 
+self-containing, meaningful summary. 
+</li><li>The writer's name and the date of the remark should be part of the 
+comment. This information is in the source repository, but it can take a quite 
+a while to find out when and by whom it was added. Often gotchas stick around 
+longer than they should. Embedding date information allows other programmer to 
+make this decision. Embedding who information lets us know who to ask. 
+</li></ul>
+<h2>Commenting function declarations</h2>
+Functions headers should be in the file where
+they are declared. This means that most likely
+the functions will have a header in the .h file. However,
+functions like main() with no explicit
+prototype declaration in the .h file, should have a header
+in the .c file.
+<h2>Include Statement Documentation</h2>Include statements should be documented, 
+telling the user why a particular file was included. 
+<br>
+/* <br>
+ * Kernel include files come first.<br>
+ */<br>
+ /* Non-local includes in brackets. */<br>
+/*<br>
+ * If it's a network program, put the network include files next.<br>
+ * Group the includes files by subdirectory.<br>
+ */<br>
+/*<br>
+ * Then there's a blank line, followed by the /usr include files.<br>
+ * The /usr include files should be sorted!<br>
+ */<p>
+</p>

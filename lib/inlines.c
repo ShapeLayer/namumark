@@ -1,3 +1,12 @@
+/**
+ * @file inlines.c
+ * @brief Inline syntax parser for text already grouped into block nodes.
+ *
+ * The parser is permissive by design.  Unknown bracket constructs are kept as
+ * macro nodes and later rendered as literal text, preserving examples such as
+ * [v] while still allowing known forms like [br], [ruby(...)], and footnotes to
+ * receive specialized output.
+ */
 #include <ctype.h>
 #include <stdbool.h>
 #include <string.h>

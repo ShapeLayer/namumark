@@ -1,3 +1,11 @@
+/**
+ * @file parser.c
+ * @brief Streaming input driver that turns bytes into normalized lines.
+ *
+ * Block parsing is line-oriented, but callers may feed arbitrary byte chunks.
+ * This file owns CR/LF normalization, NUL replacement, and parser lifecycle so
+ * blocks.c can reason about one complete logical line at a time.
+ */
 #include <memory.h>
 #include <stdlib.h>
 
@@ -58,6 +66,7 @@ static void S_parser_feed(namumark_parser *parser, const unsigned char *buffer, 
     return;
   }
 
+  /* A CRLF pair can be split across parser_feed() calls. */
   if (parser->last_buffer_endded_with_cr && *buffer == '\n') {
     buffer++;
   }
@@ -77,6 +86,7 @@ static void S_parser_feed(namumark_parser *parser, const unsigned char *buffer, 
     if (eol < end) {
       unsigned char ch = *eol;
       if (ch == '\0') {
+        /* NamuMark is text; replace embedded NUL with U+FFFD rather than truncating. */
         strbuf_puts(&parser->current_line, "\xEF\xBF\xBD");
         buffer = eol + 1;
         continue;

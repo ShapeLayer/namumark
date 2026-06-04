@@ -1,3 +1,9 @@
+//! Safe Rust wrapper around the stable namumark C API.
+//!
+//! The crate intentionally does not reimplement parsing.  It links to the C
+//! shared library, copies returned buffers into owned Rust strings, and releases
+//! the native allocation immediately after copying.
+
 use libc::{c_char, c_int, size_t};
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -7,6 +13,10 @@ pub const NAMUMARK_OUTPUT_HTML: c_int = 0;
 pub const NAMUMARK_OUTPUT_AST_JSON: c_int = 1;
 pub const NAMUMARK_OK: c_int = 0;
 
+/// FFI mirror of `struct namumark_buffer` from the public C header.
+///
+/// The buffer is allocated by the C library.  Safe wrappers copy the bytes into
+/// a Rust `String` and then call `namumark_buffer_free` exactly once.
 #[repr(C)]
 struct NamumarkBuffer {
     data: *mut c_char,
@@ -25,6 +35,7 @@ extern "C" {
     fn namumark_status_message(status: c_int) -> *const c_char;
 }
 
+/// Error returned when the C API reports a non-OK status or input cannot cross FFI.
 #[derive(Debug)]
 pub struct NamumarkError {
     pub status: c_int,
@@ -50,6 +61,8 @@ fn status_message(status: c_int) -> String {
 }
 
 pub fn render(input: &str, output_format: c_int) -> Result<String, NamumarkError> {
+    // CString is used for pointer stability; input.as_bytes().len() remains the
+    // authoritative byte count so embedded NULs are rejected instead of truncated.
     let c_input = CString::new(input).map_err(|_| NamumarkError {
         status: -1,
         message: "input contains NUL byte".to_string(),

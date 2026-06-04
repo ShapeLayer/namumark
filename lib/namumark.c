@@ -46,6 +46,11 @@ static namumark_status render_document_to_stream(namumark_node *document,
 namumark_status namumark_render(const char *input, size_t input_size,
                                 namumark_output_format format,
                                 namumark_buffer *output) {
+  /*
+   * The public API resets output before doing any work so FFI callers can safely
+   * call namumark_buffer_free() only after NAMUMARK_OK.  This convention keeps
+   * bindings simple and prevents double-free ambiguity on error paths.
+   */
   if (input == NULL || output == NULL) {
     return NAMUMARK_ERROR_INVALID_ARGUMENT;
   }
@@ -67,6 +72,11 @@ namumark_status namumark_render(const char *input, size_t input_size,
 
   char *data = NULL;
   size_t size = 0;
+  /*
+   * open_memstream gives the renderers a FILE* without exposing FILE ownership
+   * to embedders.  The resulting heap buffer becomes namumark_buffer::data on
+   * success and is freed locally on render failure.
+   */
   FILE *stream = open_memstream(&data, &size);
   if (stream == NULL) {
     namumark_node_free(document);
