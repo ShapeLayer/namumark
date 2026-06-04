@@ -39,6 +39,10 @@ typedef struct namumark_node {
   strbuf label;
   strbuf target;
   strbuf args;
+
+  strbuf *categories;
+  int category_count;
+  int category_capacity;
 } namumark_node;
 
 namumark_node *namumark_node_new(namumark_node_type type, int start_line, int start_column);

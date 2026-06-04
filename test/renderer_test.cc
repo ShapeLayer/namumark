@@ -100,6 +100,34 @@ TEST(RendererTest, AstIsProduced) {
   parser_free(parser);
 }
 
+TEST(RendererTest, AstIncludesDocumentCategories) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input = "[[분류:문법 도움말]]\n[[분류:나무위키#blur]]\n본문\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(ast.find("\"categories\": [\"문법 도움말\", \"나무위키#blur\"]"),
+            std::string::npos);
+  EXPECT_EQ(ast.find("\"type\": \"category\""), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, WikiBlockRendersNestedBlocks) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -383,8 +411,7 @@ TEST(RendererTest, InlineWikiAdvancedAfterPrefixTextInTableCell) {
   std::string html(buf, len);
   free(buf);
 
-  EXPECT_NE(html.find("<span class=\"nm-macro\" data-name=\"anchor\">anchor(object-fit)</span>"),
-            std::string::npos);
+  EXPECT_NE(html.find("<a id=\"object-fit\"></a>"), std::string::npos);
   EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"display: flex\""), std::string::npos);
   EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
 
@@ -1180,6 +1207,110 @@ TEST(RendererTest, IndentedTablesRemainInsideListItems) {
             std::string::npos);
   EXPECT_EQ(html.find("</ul>\n<table class=\"nm-table\" style=\"background-color:transparent;\">"),
             std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, TheadSortableTableStaysInsideListItem) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      " * '''표 머리글 행 설정, 정렬''': {{{<thead>, <sortable>}}}[anchor(thead)][anchor(sortable)]\n"
+      " {{{<thead>}}}는 해당 행을 표의 머리글 행으로 설정합니다. 머리글 행으로 설정한 행의 텍스트는 기본적으로 '''굵게''' 표시됩니다. {{{<sortable>}}}은 표의 머리글 행 내에 있는 셀에 기본/오름차순/내림차순 정렬 버튼을 추가합니다.\n"
+      " {{{#!wiki style=\"word-break: normal\"\n"
+      "||<tablebgcolor=transparent><table bordercolor=gray><width=4%> '''입력''' ||<width=98%><(>{{{#!wiki style=\"font-family: monospace\"\n"
+      "||<thead> 머 ||<sortable> 리 ||<sortable> 글 ||\n"
+      "|| 행1 || B || 나 ||\n"
+      "|| 행2 || A || 다 ||\n"
+      "|| 행3 || C || 가 ||}}}||\n"
+      "|| '''출력''' ||{{{#!wiki style=\"width: max-content; margin: auto\"\n"
+      "||<thead> 머 ||<sortable> 리 ||<sortable> 글 ||\n"
+      "|| 행1 || B || 나 ||\n"
+      "|| 행2 || A || 다 ||\n"
+      "|| 행3 || C || 가 ||}}}||}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<a id=\"thead\"></a><a id=\"sortable\"></a><br /><code>&lt;thead&gt;</code>는"),
+            std::string::npos);
+  EXPECT_NE(html.find("<li><strong>표 머리글 행 설정, 정렬</strong>"), std::string::npos);
+  EXPECT_NE(html.find("<br /><div class=\"nm-wiki-block\" style=\"word-break: normal\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("<thead><tr><th style=\"\"><div>머</div></th><th class=\"nm-sortable\""),
+            std::string::npos);
+  EXPECT_NE(html.find("</thead><tbody>\n<tr><td style=\"\"><div>행1</div></td>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("</li></ul>\n<div class=\"nm-wiki-block\" style=\"word-break: normal\">"),
+            std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"anchor\">"), std::string::npos);
+  EXPECT_EQ(html.find("<tr><thead>"), std::string::npos);
+  EXPECT_EQ(html.find("<tbody>\n</tbody></table>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, FoldingAdvancedRendersDetailsInTables) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<tablebgcolor=transparent><tablewidth=550><colcolor=#fff><colbgcolor=#00a495,#00a495> 예시 ||{{{{{{#!folding [ 펼치기 · 접기 ]\n"
+      "내용\n"
+      "'''내용'''\n"
+      "__내용__}}}}}}||\n"
+      "|| 결과 ||{{{#!folding [ 펼치기 · 접기 ]\n"
+      "내용\n"
+      "'''내용'''\n"
+      "__내용__}}}||\n"
+      "|| 결과 ||{{{#!folding '''[ 펼치기 · 접기 ]'''\n"
+      "접기 안내 문구에는 위키문법 적용 불가}}}||{{{#!folding {{{#red [ 펼치기 · 접기 ]}}}\n"
+      "접기 안내 문구에는 위키문법 적용 불가}}}||\n"
+      "|| 결과 ||'''{{{#!folding [ 펼치기 · 접기 ]\n"
+      "접기 문법 자체에는 위키문법 적용 가능}}}'''||{{{#red {{{#!folding [ 펼치기 · 접기 ]\n"
+      "접기 문법 자체에는 위키문법 적용 가능}}}}}}||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>{{{#!folding [ 펼치기 · 접기 ]\n내용\n&#39;&#39;&#39;내용&#39;&#39;&#39;\n__내용__}}}</code></pre>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<details class=\"nm-folding\"><summary>[ 펼치기 · 접기 ]</summary><div>내용<br /><strong>내용</strong><br /><u>내용</u></div></details>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<summary>&#39;&#39;&#39;[ 펼치기 · 접기 ]&#39;&#39;&#39;</summary><div>접기 안내 문구에는 위키문법 적용 불가</div>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<summary>{{{#red [ 펼치기 · 접기 ]}}}</summary><div>접기 안내 문구에는 위키문법 적용 불가</div>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<strong><details class=\"nm-folding\"><summary>[ 펼치기 · 접기 ]</summary><div>접기 문법 자체에는 위키문법 적용 가능</div></details></strong>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-advanced\" data-advanced=\"#red\" style=\"color:red;\"><details class=\"nm-folding\"><summary>[ 펼치기 · 접기 ]</summary><div>접기 문법 자체에는 위키문법 적용 가능</div></details></span>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("{{{#!folding [ 펼치기 · 접기 ]<br />내용"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);

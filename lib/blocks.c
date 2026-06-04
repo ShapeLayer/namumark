@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "blocks.h"
@@ -280,6 +281,42 @@ static int parse_category_line(const unsigned char *line, bufsize_t len, bufsize
   *name_end = len - 2;
   trim_edges(line, name_start, name_end);
   return *name_start < *name_end;
+}
+
+static int append_document_category(namumark_node *document, const unsigned char *name,
+                                    bufsize_t len) {
+  if (document == NULL || name == NULL || len == 0) {
+    return 0;
+  }
+
+  bufsize_t actual_len = len;
+  for (bufsize_t i = 0; i < len; i++) {
+    if (name[i] == '|') {
+      actual_len = i;
+      break;
+    }
+  }
+  while (actual_len > 0 && name[actual_len - 1] == ' ') {
+    actual_len--;
+  }
+  if (actual_len == 0) {
+    return 0;
+  }
+
+  if (document->category_count >= document->category_capacity) {
+    int new_capacity = document->category_capacity == 0 ? 4 : document->category_capacity * 2;
+    strbuf *categories = (strbuf *)realloc(document->categories, sizeof(strbuf) * new_capacity);
+    if (categories == NULL) {
+      return 0;
+    }
+    document->categories = categories;
+    document->category_capacity = new_capacity;
+  }
+
+  strbuf_init(&document->categories[document->category_count], actual_len + 1);
+  strbuf_set(&document->categories[document->category_count], name, actual_len);
+  document->category_count++;
+  return 1;
 }
 
 static int parse_footnote_definition(const unsigned char *line, bufsize_t len,
@@ -824,6 +861,7 @@ static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigne
   if (wiki == NULL) {
     return;
   }
+  wiki->start_column = (int)skip_spaces(line, len, 0) + 1;
 
   bufsize_t style_start = 0;
   bufsize_t style_len = 0;
@@ -1148,8 +1186,7 @@ void process_line(namumark_parser *parser) {
   }
 
   if (parse_category_line(line, len, &start, &end)) {
-    namumark_node *category = append_block_text(parser, NAMUMARK_NODE_CATEGORY, line + start, end - start);
-    set_block_target(category, line + start, end - start);
+    append_document_category(parser->root, line + start, end - start);
     strbuf_clear(&parser->current_line);
     return;
   }
@@ -1160,7 +1197,7 @@ void process_line(namumark_parser *parser) {
     return;
   }
 
-  if (is_inline_advanced_text_start(line, len)) {
+  if (is_inline_advanced_text_start(line, len) && skip_spaces(line, len, 0) == 0) {
     namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
     if (pre != NULL) {
       pre->end_line = parser->line_number;

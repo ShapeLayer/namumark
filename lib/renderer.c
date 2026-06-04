@@ -181,6 +181,23 @@ static int print_node_json(const namumark_node *node, FILE *out, int depth) {
     return 0;
   }
 
+  if (node->type == NAMUMARK_NODE_DOCUMENT) {
+    if (!print_indent(out, depth + 1) || fputs("\"categories\": [", out) < 0) {
+      return 0;
+    }
+    for (int i = 0; i < node->category_count; i++) {
+      if (i > 0 && fputs(", ", out) < 0) {
+        return 0;
+      }
+      if (!print_quoted(out, &node->categories[i])) {
+        return 0;
+      }
+    }
+    if (fputs("],\n", out) < 0) {
+      return 0;
+    }
+  }
+
   if (!print_indent(out, depth + 1) || fputs("\"children\": [", out) < 0) {
     return 0;
   }
@@ -569,9 +586,13 @@ static int is_list_continuation_table(const namumark_node *node) {
          node->content.ptr[0] == ' ';
 }
 
+static int is_list_continuation_wiki_block(const namumark_node *node) {
+  return node != NULL && node->type == NAMUMARK_NODE_WIKI_BLOCK && node->start_column > 1;
+}
+
 static int is_rendered_list_sequence_node(const namumark_node *node) {
   return node != NULL && (node->type == NAMUMARK_NODE_LIST || is_list_continuation_text(node) ||
-                          is_list_continuation_table(node));
+                          is_list_continuation_table(node) || is_list_continuation_wiki_block(node));
 }
 
 static int is_footnote_macro_only_text(const namumark_node *node) {
@@ -585,6 +606,9 @@ static int is_blockquote_sequence_node(const namumark_node *node) {
 }
 
 static int count_leading_spaces_in_node(const namumark_node *node) {
+  if (node != NULL && node->type == NAMUMARK_NODE_WIKI_BLOCK && node->start_column > 1) {
+    return node->start_column - 1;
+  }
   int spaces = 0;
   while ((bufsize_t)spaces < node->content.size && node->content.ptr[spaces] == ' ') {
     spaces++;
@@ -931,6 +955,50 @@ static int render_wiki_advanced_block(FILE *out, const namumark_node *node) {
   return fputs("</div>", out) >= 0;
 }
 
+static int render_folding_advanced_block(FILE *out, const namumark_node *node) {
+  if (node == NULL) {
+    return 1;
+  }
+
+  bufsize_t line_end = strbuf_strchr(&node->content, '\n', 0);
+  if (line_end < 0) {
+    line_end = node->content.size;
+  }
+
+  bufsize_t summary_start = 9;
+  while (summary_start < line_end &&
+         (node->content.ptr[summary_start] == ' ' || node->content.ptr[summary_start] == '\t')) {
+    summary_start++;
+  }
+  bufsize_t summary_end = line_end;
+  while (summary_end > summary_start &&
+         (node->content.ptr[summary_end - 1] == '\r' || node->content.ptr[summary_end - 1] == ' ')) {
+    summary_end--;
+  }
+
+  if (fputs("<details class=\"nm-folding\"><summary>", out) < 0) {
+    return 0;
+  }
+  if (summary_end > summary_start) {
+    if (!print_html_escaped_bytes(out, node->content.ptr + summary_start, summary_end - summary_start)) {
+      return 0;
+    }
+  } else if (fputs("More", out) < 0) {
+    return 0;
+  }
+  if (fputs("</summary><div>", out) < 0) {
+    return 0;
+  }
+
+  bufsize_t body_start = line_end < node->content.size ? line_end + 1 : node->content.size;
+  if (body_start < node->content.size) {
+    if (!render_table_cell_content(out, node->content.ptr + body_start, node->content.size - body_start)) {
+      return 0;
+    }
+  }
+  return fputs("</div></details>", out) >= 0;
+}
+
 static int render_inline_node(FILE *out, const namumark_node *node) {
   switch (node->type) {
     case NAMUMARK_NODE_TEXT:
@@ -973,6 +1041,10 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
       if (node->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE) {
         return render_footnote_list(out);
       }
+      if (node->target.size == 6 && memcmp(node->target.ptr, "anchor", 6) == 0) {
+        return fputs("<a id=\"", out) >= 0 && print_html_escaped(out, &node->args) &&
+               fputs("\"></a>", out) >= 0;
+      }
       if (fputs("<span class=\"nm-macro\" data-name=\"", out) < 0 ||
           !print_html_escaped(out, &node->target) || fputs("\">", out) < 0 ||
           !print_html_escaped(out, &node->content) || fputs("</span>", out) < 0) {
@@ -998,6 +1070,9 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
       }
       if (node->advanced_type == NAMUMARK_NODE_ADVANCED_WIKI) {
         return render_wiki_advanced_block(out, node);
+      }
+      if (node->advanced_type == NAMUMARK_NODE_ADVANCED_FOLDING) {
+        return render_folding_advanced_block(out, node);
       }
       if (node->advanced_type == NAMUMARK_NODE_ADVANCED_SIZING ||
           node->advanced_type == NAMUMARK_NODE_ADVANCED_COLOR) {
@@ -1108,6 +1183,8 @@ typedef struct table_render_style {
   int colspan;
   int rowspan;
   int no_padding;
+  int thead;
+  int sortable;
 } table_render_style;
 
 typedef struct table_render_context {
@@ -1129,6 +1206,8 @@ static void table_style_init(table_render_style *style) {
   style->colspan = 0;
   style->rowspan = 0;
   style->no_padding = 0;
+  style->thead = 0;
+  style->sortable = 0;
 }
 
 static void table_style_free(table_render_style *style) {
@@ -1242,6 +1321,14 @@ static void parse_table_token(const unsigned char *token, bufsize_t token_len,
 
   if (token_len == 5 && memcmp(token, "nopad", 5) == 0) {
     cell_style->no_padding = 1;
+    return;
+  }
+  if (token_len == 5 && memcmp(token, "thead", 5) == 0) {
+    row_style->thead = 1;
+    return;
+  }
+  if (token_len == 8 && memcmp(token, "sortable", 8) == 0) {
+    cell_style->sortable = 1;
     return;
   }
 
@@ -1555,21 +1642,23 @@ static bufsize_t find_token_in_range(const unsigned char *text, bufsize_t start,
 
 static bufsize_t find_wiki_advanced_start(const unsigned char *text, bufsize_t start,
                                           bufsize_t end) {
-  static const char token[] = "{{{#!wiki";
-  static const bufsize_t token_len = sizeof(token) - 1;
-
-  if (end - start < token_len) {
+  if (end <= start) {
     return -1;
   }
 
-  for (bufsize_t i = start; i + token_len <= end; i++) {
-    if (memcmp(text + i, token, (size_t)token_len) != 0) {
-      continue;
+  for (bufsize_t i = start; i + 9 <= end; i++) {
+    int matched = 0;
+    if (i + 9 <= end && memcmp(text + i, "{{{#!wiki", 9) == 0) {
+      matched = 1;
+    } else if (i + 12 <= end && memcmp(text + i, "{{{#!folding", 12) == 0) {
+      matched = 1;
     }
-    if (i > start && text[i - 1] == '{') {
-      continue;
+    if (matched) {
+      if (i > start && text[i - 1] == '{') {
+        continue;
+      }
+      return i;
     }
-    return i;
   }
 
   return -1;
@@ -1588,6 +1677,27 @@ static int is_table_cell_literal_advanced(const unsigned char *text, bufsize_t s
     return 0;
   }
   return 1;
+}
+
+static int starts_folding_advanced_at(const unsigned char *text, bufsize_t pos, bufsize_t end) {
+  return pos + 12 <= end && memcmp(text + pos, "{{{#!folding", 12) == 0;
+}
+
+static int is_folding_wrapper_prefix(const unsigned char *text, bufsize_t start, bufsize_t folding_start) {
+  if (folding_start <= start) {
+    return 0;
+  }
+  bufsize_t end = folding_start;
+  while (end > start && text[end - 1] == ' ') {
+    end--;
+  }
+  if (end == start + 3 && memcmp(text + start, "'''", 3) == 0) {
+    return 1;
+  }
+  if (end > start + 4 && memcmp(text + start, "{{{#", 4) == 0) {
+    return 1;
+  }
+  return 0;
 }
 
 static int parse_blockquote_line(const unsigned char *text, bufsize_t line_start,
@@ -1904,13 +2014,18 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
         in_list--;
       }
 
-      if (wiki_start > s) {
+      bufsize_t collect_start = wiki_start;
+      if (starts_folding_advanced_at(text, wiki_start, e) && is_folding_wrapper_prefix(text, s, wiki_start)) {
+        collect_start = s;
+      }
+
+      if (collect_start > s) {
         if (!first_plain && fputs("<br />", out) < 0) {
           strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
-        if (!render_inline_snippet(out, text + s, wiki_start - s)) {
+        if (!render_inline_snippet(out, text + s, collect_start - s)) {
           strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
@@ -1921,10 +2036,10 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
       if (wiki_advanced.size > 0) {
         strbuf_putc(&wiki_advanced, '\n');
       }
-      strbuf_put(&wiki_advanced, text + wiki_start, e - wiki_start);
+      strbuf_put(&wiki_advanced, text + collect_start, e - collect_start);
 
-      int starts = count_token_occurrences(text + wiki_start, e - wiki_start, "{{{", 3);
-      int ends = count_token_occurrences(text + wiki_start, e - wiki_start, "}}}", 3);
+      int starts = count_token_occurrences(text + collect_start, e - collect_start, "{{{", 3);
+      int ends = count_token_occurrences(text + collect_start, e - collect_start, "}}}", 3);
       wiki_advanced_depth = starts - ends;
 
       if (wiki_advanced_depth <= 0) {
@@ -2087,7 +2202,8 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
 }
 
 static int render_table_row(FILE *out, const strbuf *row, int row_index,
-                            table_render_context *table_style) {
+                            table_render_context *table_style, int *thead_open,
+                            int *tbody_open) {
   (void)row_index;
 
   bufsize_t line_end = row->size;
@@ -2107,12 +2223,53 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
     return 1;
   }
 
-  if (fputs("<tr>", out) < 0) {
-    return 0;
-  }
-
   table_render_style row_style;
   table_style_init(&row_style);
+
+  {
+    bufsize_t probe = s + 2;
+    while (probe < line_end) {
+      bufsize_t probe_sep = find_table_cell_separator(row->ptr, probe, line_end);
+      bufsize_t probe_end = (probe_sep >= 0) ? probe_sep : line_end;
+      strbuf probe_cell;
+      strbuf_init(&probe_cell, probe_end - probe + 1);
+      if (probe_end > probe) {
+        strbuf_set(&probe_cell, row->ptr + probe, probe_end - probe);
+      }
+      table_render_style probe_cell_style;
+      table_style_init(&probe_cell_style);
+      bufsize_t probe_content_start = 0;
+      parse_cell_prefix(&probe_cell, table_style, &row_style, &probe_cell_style, &probe_content_start);
+      table_style_free(&probe_cell_style);
+      strbuf_free(&probe_cell);
+      if (probe_sep < 0 || probe_sep + 1 >= line_end) {
+        break;
+      }
+      probe = probe_sep + 2;
+    }
+  }
+
+  if (row_style.thead && thead_open != NULL && !*thead_open) {
+    if (fputs("<thead>", out) < 0) {
+      table_style_free(&row_style);
+      return 0;
+    }
+    *thead_open = 1;
+  } else if (!row_style.thead && thead_open != NULL && *thead_open) {
+    if (fputs("</thead><tbody>\n", out) < 0) {
+      table_style_free(&row_style);
+      return 0;
+    }
+    *thead_open = 0;
+    if (tbody_open != NULL) {
+      *tbody_open = 1;
+    }
+  }
+
+  if (fputs("<tr>", out) < 0) {
+    table_style_free(&row_style);
+    return 0;
+  }
 
   bufsize_t p = s + 2;
   int cell_index = 0;
@@ -2160,8 +2317,15 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
       continue;
     }
 
-    const char *tag = "td";
+    const char *tag = row_style.thead ? "th" : "td";
     if (fputs("<", out) < 0 || fputs(tag, out) < 0) {
+      table_style_free(&cell_style);
+      strbuf_free(&cell);
+      table_style_free(&row_style);
+      return 0;
+    }
+
+    if (cell_style.sortable && fputs(" class=\"nm-sortable\"", out) < 0) {
       table_style_free(&cell_style);
       strbuf_free(&cell);
       table_style_free(&row_style);
@@ -2310,6 +2474,41 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
   return 1;
 }
 
+static int table_row_is_thead(const strbuf *row) {
+  if (row == NULL || row->size == 0) {
+    return 0;
+  }
+  bufsize_t line_end = row->size;
+  while (line_end > 0 && (row->ptr[line_end - 1] == '\n' || row->ptr[line_end - 1] == '\r' ||
+                          row->ptr[line_end - 1] == ' ')) {
+    line_end--;
+  }
+  bufsize_t p = 0;
+  while (p < line_end && row->ptr[p] == ' ') {
+    p++;
+  }
+  if (p + 1 >= line_end || row->ptr[p] != '|' || row->ptr[p + 1] != '|') {
+    return 0;
+  }
+  p += 2;
+  while (p < line_end) {
+    bufsize_t sep = find_table_cell_separator(row->ptr, p, line_end);
+    bufsize_t cell_end = sep >= 0 ? sep : line_end;
+    bufsize_t cell_start = p;
+    while (cell_start < cell_end && row->ptr[cell_start] == ' ') {
+      cell_start++;
+    }
+    if (cell_start + 7 <= cell_end && memcmp(row->ptr + cell_start, "<thead>", 7) == 0) {
+      return 1;
+    }
+    if (sep < 0 || sep + 1 >= line_end) {
+      break;
+    }
+    p = sep + 2;
+  }
+  return 0;
+}
+
 static int render_block_node(FILE *out, const namumark_node *node) {
   switch (node->type) {
     case NAMUMARK_NODE_REDIRECT:
@@ -2406,19 +2605,21 @@ static int render_block_node(FILE *out, const namumark_node *node) {
           int spaces = count_leading_spaces_in_node(continuation);
           bufsize_t start = spaces >= continuation_target ? (bufsize_t)continuation_target :
                                                             (bufsize_t)spaces;
-          if (continuation->type == NAMUMARK_NODE_TABLE) {
-            namumark_node table_copy = *continuation;
-            table_copy.first_child = NULL;
-            table_copy.last_child = NULL;
-            table_copy.next = NULL;
-            table_copy.prev = NULL;
-            strbuf_init(&table_copy.content, continuation->content.size - start + 1);
-            if (start < continuation->content.size) {
-              strbuf_put(&table_copy.content, continuation->content.ptr + start,
+          if (continuation->type == NAMUMARK_NODE_TABLE || continuation->type == NAMUMARK_NODE_WIKI_BLOCK) {
+            namumark_node block_copy = *continuation;
+            block_copy.first_child = NULL;
+            block_copy.last_child = NULL;
+            block_copy.next = NULL;
+            block_copy.prev = NULL;
+            strbuf_init(&block_copy.content, continuation->content.size - start + 1);
+            if (continuation->type == NAMUMARK_NODE_TABLE && start < continuation->content.size) {
+              strbuf_put(&block_copy.content, continuation->content.ptr + start,
                          continuation->content.size - start);
+            } else {
+              strbuf_set(&block_copy.content, continuation->content.ptr, continuation->content.size);
             }
-            int ok = render_block_node(out, &table_copy);
-            strbuf_free(&table_copy.content);
+            int ok = render_block_node(out, &block_copy);
+            strbuf_free(&block_copy.content);
             if (!ok) {
               return 0;
             }
@@ -2617,12 +2818,15 @@ static int render_block_node(FILE *out, const namumark_node *node) {
         }
       }
 
-      if (fputs("\"><tbody>\n", out) < 0) {
+      if (fputs("\">", out) < 0) {
         strbuf_free(&pending_row);
         strbuf_free(&tablebuf);
         table_context_free(&table_style);
         return 0;
       }
+
+      int tbody_open = 0;
+      int thead_open = 0;
 
       while (line_start <= tablebuf.size) {
         bufsize_t line_end = strbuf_strchr(&tablebuf, '\n', line_start);
@@ -2636,7 +2840,17 @@ static int render_block_node(FILE *out, const namumark_node *node) {
 
           if (is_row_start_line(line_ptr, line_len)) {
             if (pending_row.size > 0 && table_row_ends_with_separator(&pending_row)) {
-              if (!render_table_row(out, &pending_row, row_index, &table_style)) {
+              if (!thead_open && !tbody_open && !table_row_is_thead(&pending_row)) {
+                if (fputs("<tbody>\n", out) < 0) {
+                  strbuf_free(&pending_row);
+                  strbuf_free(&tablebuf);
+                  table_context_free(&table_style);
+                  return 0;
+                }
+                tbody_open = 1;
+              }
+              if (!render_table_row(out, &pending_row, row_index, &table_style, &thead_open,
+                                    &tbody_open)) {
                 strbuf_free(&pending_row);
                 strbuf_free(&tablebuf);
                 table_context_free(&table_style);
@@ -2664,7 +2878,17 @@ static int render_block_node(FILE *out, const namumark_node *node) {
       }
 
       if (pending_row.size > 0) {
-        if (!render_table_row(out, &pending_row, row_index, &table_style)) {
+        if (!thead_open && !tbody_open && !table_row_is_thead(&pending_row)) {
+          if (fputs("<tbody>\n", out) < 0) {
+            strbuf_free(&pending_row);
+            strbuf_free(&tablebuf);
+            table_context_free(&table_style);
+            return 0;
+          }
+          tbody_open = 1;
+        }
+        if (!render_table_row(out, &pending_row, row_index, &table_style, &thead_open,
+                              &tbody_open)) {
           strbuf_free(&pending_row);
           strbuf_free(&tablebuf);
           table_context_free(&table_style);
@@ -2672,12 +2896,34 @@ static int render_block_node(FILE *out, const namumark_node *node) {
         }
       }
 
+      if (thead_open && fputs("</thead><tbody>\n", out) < 0) {
+        strbuf_free(&pending_row);
+        strbuf_free(&tablebuf);
+        table_context_free(&table_style);
+        return 0;
+      }
+      if (thead_open) {
+        tbody_open = 1;
+      }
+
+      if (!tbody_open) {
+        if (fputs("<tbody>\n", out) < 0) {
+          strbuf_free(&pending_row);
+          strbuf_free(&tablebuf);
+          table_context_free(&table_style);
+          return 0;
+        }
+      }
+
+      if (fputs("</tbody></table>\n", out) < 0) {
+        strbuf_free(&pending_row);
+        strbuf_free(&tablebuf);
+        table_context_free(&table_style);
+        return 0;
+      }
       strbuf_free(&pending_row);
       strbuf_free(&tablebuf);
       table_context_free(&table_style);
-      if (fputs("</tbody></table>\n", out) < 0) {
-        return 0;
-      }
       return 1;
     }
     case NAMUMARK_NODE_WIKI_BLOCK: {

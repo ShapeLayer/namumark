@@ -42,6 +42,32 @@ TEST(ParserTest, ParsesRedirectAsFirstLineOnly) {
   parser_free(parser);
 }
 
+TEST(ParserTest, CollectsCategoriesOnDocumentRoot) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "[[분류:문법 도움말]]\n"
+      "본문\n"
+      "[[분류:나무위키#blur]]\n"
+      "[[분류:정렬키|출력명]]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  EXPECT_EQ(doc->category_count, 3);
+  ASSERT_GE(doc->category_count, 3);
+  EXPECT_STREQ(reinterpret_cast<const char *>(doc->categories[0].ptr), "문법 도움말");
+  EXPECT_STREQ(reinterpret_cast<const char *>(doc->categories[1].ptr), "나무위키#blur");
+  EXPECT_STREQ(reinterpret_cast<const char *>(doc->categories[2].ptr), "정렬키");
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_NE(doc->first_child->type, NAMUMARK_NODE_CATEGORY);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(ParserTest, ParsesHeadingAndInlineChildren) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

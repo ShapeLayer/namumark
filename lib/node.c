@@ -61,5 +61,9 @@ void namumark_node_free(namumark_node *node) {
   strbuf_free(&node->label);
   strbuf_free(&node->target);
   strbuf_free(&node->args);
+  for (int i = 0; i < node->category_count; i++) {
+    strbuf_free(&node->categories[i]);
+  }
+  free(node->categories);
   free(node);
 }
