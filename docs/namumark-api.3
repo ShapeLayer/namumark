@@ -1,0 +1,64 @@
+.TH NAMUMARK_API 3 "2026-06-04" "namumark 0.0.1" "Library Functions Manual"
+.SH NAME
+namumark_render, namumark_render_html, namumark_render_ast_json, namumark_buffer_free \- render NamuMark text through the C API
+.SH SYNOPSIS
+.nf
+#include <lib/namumark.h>
+
+typedef struct namumark_buffer {
+    char *data;
+    size_t size;
+} namumark_buffer;
+
+const char *namumark_version(void);
+const char *namumark_status_message(namumark_status status);
+
+namumark_status namumark_render(const char *input, size_t input_size,
+                                namumark_output_format format,
+                                namumark_buffer *output);
+namumark_status namumark_render_html(const char *input, size_t input_size,
+                                     namumark_buffer *output);
+namumark_status namumark_render_ast_json(const char *input, size_t input_size,
+                                         namumark_buffer *output);
+void namumark_buffer_free(namumark_buffer *buffer);
+.fi
+.SH DESCRIPTION
+The namumark C API renders an input byte buffer containing NamuMark markup into either HTML or AST JSON.
+.PP
+The output buffer is allocated by the library. Call
+.BR namumark_buffer_free ()
+exactly once for every successful render call.
+.PP
+The input is treated as UTF-8 text, but the C API accepts bytes and does not require a trailing NUL byte. The returned buffer is NUL-terminated for convenience and its byte length is stored in
+.IR size .
+.SH RETURN VALUE
+Render functions return
+.B NAMUMARK_OK
+on success. On failure they return a non-zero
+.B namumark_status
+value. Use
+.BR namumark_status_message ()
+for a stable English diagnostic string.
+.SH EXAMPLE
+.nf
+#include <stdio.h>
+#include <string.h>
+#include <lib/namumark.h>
+
+int main(void) {
+    const char *input = "== Title ==\nBody [[Page|link]]\n";
+    namumark_buffer output = {0};
+    namumark_status status = namumark_render_html(input, strlen(input), &output);
+
+    if (status != NAMUMARK_OK) {
+        fprintf(stderr, "%s\n", namumark_status_message(status));
+        return 1;
+    }
+
+    fwrite(output.data, 1, output.size, stdout);
+    namumark_buffer_free(&output);
+    return 0;
+}
+.fi
+.SH SEE ALSO
+.BR namumark (1)

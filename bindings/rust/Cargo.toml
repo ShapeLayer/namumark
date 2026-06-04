@@ -1,0 +1,12 @@
+[package]
+name = "namumark-sys"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "namumark"
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"

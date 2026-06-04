@@ -15,6 +15,7 @@ option(NAMUMARK_BUILD_TESTING "Build tests" ON)
 add_library(namumark-lib STATIC
   lib/blocks.c
   lib/inlines.c
+  lib/namumark.c
   lib/node.c
   lib/parser.c
   lib/renderer_ast.c
@@ -22,12 +23,38 @@ add_library(namumark-lib STATIC
   lib/strbuf.c
 )
 
+add_library(namumark-shared SHARED
+  lib/blocks.c
+  lib/inlines.c
+  lib/namumark.c
+  lib/node.c
+  lib/parser.c
+  lib/renderer_ast.c
+  lib/renderer_html.c
+  lib/strbuf.c
+)
+
+set_target_properties(namumark-shared PROPERTIES
+  OUTPUT_NAME namumark
+)
+
 target_include_directories(namumark-lib
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+target_include_directories(namumark-shared
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 target_compile_options(namumark-lib
+  PRIVATE
+    -Wall
+    -Wextra
+)
+
+target_compile_options(namumark-shared
   PRIVATE
     -Wall
     -Wextra
@@ -42,6 +69,15 @@ target_link_libraries(namumark
     namumark-lib
 )
 
+install(TARGETS namumark namumark-shared
+  RUNTIME DESTINATION bin
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+)
+
+install(FILES lib/namumark.h DESTINATION include/namumark)
+install(FILES docs/namumark-api.3 DESTINATION share/man/man3)
+
 if(NAMUMARK_BUILD_TESTING)
   include(CTest)
   include(FetchContent)
@@ -55,6 +91,7 @@ if(NAMUMARK_BUILD_TESTING)
   FetchContent_MakeAvailable(googletest)
 
   add_executable(namumark-test
+    test/api_test.cc
     test/inlines_test.cc
     test/parser_test.cc
     test/renderer_test.cc
