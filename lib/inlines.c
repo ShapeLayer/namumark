@@ -294,7 +294,7 @@ static void parse_advanced_content(namumark_node *node) {
             while (q < node->content.size && node->content.ptr[q] != '"') {
               q++;
             }
-            if (q > i + 1 && q < node->content.size) {
+            if (q >= i + 1 && q < node->content.size) {
               strbuf_set(&node->args, node->content.ptr + i + 1, q - (i + 1));
             }
           } else {

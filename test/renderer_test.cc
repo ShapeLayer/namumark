@@ -1000,6 +1000,191 @@ TEST(RendererTest, OneCellPerLineTableDocumentationCase) {
   parser_free(parser);
 }
 
+TEST(RendererTest, TableCellColspanAndRowspanSyntax) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki\n"
+      "|| 한 || 칸 || 짜 || 리 ||\n"
+      "|||| 두칸 |||| 짜리 ||\n"
+      "|||||| 세칸짜 || 리 ||\n"
+      "|||||||| 네칸짜리 ||}}}\n"
+      "{{{#!wiki\n"
+      "|| 한 || 칸 || 짜 || 리 ||\n"
+      "||<-2> 두칸 ||<-2> 짜리 ||\n"
+      "||<-3> 세칸짜 || 리 ||\n"
+      "||<-4> 네칸짜리 ||}}}\n"
+      "{{{#!wiki style=\"\"\n"
+      "||<|4> 네줄 ||<|3> 세줄 ||<|2> 두줄 ||<|1> 한줄 ||\n"
+      "|| 여백1 ||\n"
+      "|| 여백2 || 여백3 ||\n"
+      "|| 여백4 || 여백5 || 여백6 ||}}}\n"
+      "{{{#!wiki style=\"\"\n"
+      "|| 여백 || 여백 || 여백 || 여백 ||\n"
+      "|| 여백 ||<-3><|2> 3 곱하기 2 ||\n"
+      "|| 여백 ||}}}\n"
+      "{{{#!wiki style=\"\"\n"
+      "|| 여백 || 여백 || 여백 || 여백 ||\n"
+      "|| 여백 ||||||<|2> 3 곱하기 2 ||\n"
+      "|| 여백 ||}}}\n"
+      "{{{#!wiki\n"
+      "||<table bordercolor=red> 테이 || 블이 || 몇칸 || 이든 ||\n"
+      "||<-4><height=60> 한 번에 다 합쳐집니다. ||}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<td colspan=\"2\" style=\"\"><div>두칸</div></td><td colspan=\"2\" style=\"\"><div>짜리</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td colspan=\"3\" style=\"\"><div>세칸짜</div></td><td style=\"\"><div>리</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td colspan=\"4\" style=\"\"><div>네칸짜리</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td rowspan=\"4\" style=\"\"><div>네줄</div></td><td rowspan=\"3\" style=\"\"><div>세줄</div></td><td rowspan=\"2\" style=\"\"><div>두줄</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td colspan=\"3\" rowspan=\"2\" style=\"\"><div>3 곱하기 2</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<table class=\"nm-table\" style=\"border:2px solid red;\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td colspan=\"4\" style=\"height:60px;\"><div>한 번에 다 합쳐집니다.</div></td>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("style=\"&quot;&quot;\""), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, RowspanTableCloseLineDoesNotSwallowNextHeading) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "셀을 복잡하게 합칠 경우에는 줄 바꿈에 특히 유의하십시오. 입력할 셀이 없는 줄에는 {{{||||}}}를 입력합니다.\n"
+      "||<tablebgcolor=transparent><rowbgcolor=#00a495,#00a495><rowcolor=#fff><table bordercolor=gray><width=200px> 대상 ||<width=300px> 입력 ||<width=200px> 출력 ||\n"
+      "||{{{|| 세줄1 || 두줄1 ||\n"
+      "|| 세줄1 || 두줄1 ||\n"
+      "|| 세줄1 || 두줄2 ||\n"
+      "|| 세줄2 || 두줄2 ||\n"
+      "|| 세줄2 || 두줄3 ||\n"
+      "|| 세줄2 || 두줄3 ||}}}\n"
+      "||{{{\n"
+      "||<|3><height=60> 세줄1 ||<|2><height=40> 두줄1 ||\n"
+      "||||\n"
+      "||<|2><height=40> 두줄2 ||\n"
+      "||<|3><height=60> 세줄2 ||\n"
+      "||<|2><height=40> 두줄3 ||\n"
+      "||||\n"
+      "}}}||{{{#!wiki style=\"\"\n"
+      "||<|3><height=60> 세줄1 ||<|2><height=40> 두줄1 ||\n"
+      "||||\n"
+      "||<|2><height=40> 두줄2 ||\n"
+      "||<|3><height=60> 세줄2 ||\n"
+      "||<|2><height=40> 두줄3 ||\n"
+      "||||}}}\n"
+      "||\n"
+      "\n"
+      "==== 가로세로 합치기 ====\n"
+      "셀을 가로와 세로로 모두 합칠 수 있습니다. {{{<-수>}}}와 {{{<|수>}}} 두 가지를 같이 입력합니다.\n"
+      "||<tablebgcolor=transparent><rowbgcolor=#00a495,#00a495><rowcolor=#fff><table bordercolor=gray><width=33%> 입력 1 ||<width=33%> 입력 2 ||<width=33%> 출력 ||\n"
+      "||{{{|| 여백 || 여백 || 여백 || 여백 ||\n"
+      "|| 여백 ||<-3><|2> 3 곱하기 2 ||\n"
+      "|| 여백 ||\n"
+      "}}}||{{{|| 여백 || 여백 || 여백 || 여백 ||\n"
+      "|| 여백 ||||||<|2> 3 곱하기 2 ||\n"
+      "|| 여백 ||\n"
+      "}}}||{{{#!wiki style=\"\"\n"
+      "|| 여백 || 여백 || 여백 || 여백 ||\n"
+      "|| 여백 ||<-3><|2> 3 곱하기 2 ||\n"
+      "|| 여백 ||}}}||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("</tbody></table>\n<h4>가로세로 합치기</h4>"), std::string::npos);
+  EXPECT_NE(html.find("<tr></tr>\n<tr><td rowspan=\"2\" style=\"height:40px;\"><div>두줄2</div></td></tr>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td colspan=\"3\" rowspan=\"2\" style=\"\"><div>3 곱하기 2</div></td>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("<td style=\"\"><div>==== 가로세로 합치기 ===="), std::string::npos);
+  EXPECT_EQ(html.find("</td><td style=\"width:33%;background-color:#00a495;color:#fff;\"><div>입력 1"),
+            std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, IndentedTablesRemainInsideListItems) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      " * '''셀 텍스트 가로정렬'''\n"
+      "   * {{{<(>}}} 또는 셀에서 ||(텍스트) ||: 텍스트 왼쪽 정렬 (기본값)\n"
+      "   * {{{<:>}}} 또는 셀에서 || (텍스트) ||: 텍스트 가운데 정렬 \n"
+      "   * {{{<)>}}} 또는 셀에서 || (텍스트)||: 텍스트 오른쪽 정렬\n"
+      "   ||<tablebgcolor=transparent>{{{||<(>텍스트[br]왼쪽[br]정렬||}}} || {{{||<:>텍스트[br]가운데[br]정렬||}}} || {{{||<)>텍스트[br]오른쪽[br]정렬||}}}||\n"
+      "   ||{{{||텍스트[br]왼쪽[br]정렬 ||}}} || {{{|| 텍스트[br]가운데[br]정렬 ||}}} || {{{|| 텍스트[br]오른쪽[br]정렬||}}}||\n"
+      "   ||<(>텍스트[br]왼쪽[br]정렬||<:>텍스트[br]가운데[br]정렬||<)>텍스트[br]오른쪽[br]정렬||\n"
+      " * '''셀 텍스트 세로 정렬'''\n"
+      "  * {{{<^|숫자>}}}: 텍스트 수직 위 정렬\n"
+      "  * {{{<|숫자>}}}: 텍스트 수직 가운데 정렬 (기본값)\n"
+      "  * {{{<v|숫자>}}}: 텍스트 수직 아래 정렬\n"
+      "   숫자는 해당 셀에 세로로 합쳐진 셀의 개수로, 세로로 합쳐지지 않은 셀에 적용하려면 숫자에 '1'을 넣으면 됩니다.\n"
+      "   ||<tablebgcolor=transparent>{{{||<^|1> 수직 위 정렬 ||}}}||{{{||<|1> 수직 가운데 정렬 ||}}}||{{{||<v|1> 수직 아래 정렬 ||}}}||\n"
+      "   ||<height=100><^|1> 수직 위 정렬 ||<|1> 수직 가운데 정렬 ||<v|1> 수직 아래 정렬 ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("텍스트 오른쪽 정렬<br /><table class=\"nm-table\" style=\"background-color:transparent;\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td style=\"text-align:left;\"><div>텍스트<br />왼쪽<br />정렬</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td style=\"height:100px;vertical-align:top;\"><div>수직 위 정렬</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td style=\"vertical-align:bottom;\"><div>수직 아래 정렬</div></td>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("</ul>\n<table class=\"nm-table\" style=\"background-color:transparent;\">"),
+            std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, ClosedMultilineWikiTableRowDoesNotSwallowFollowingBlocks) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

@@ -492,7 +492,7 @@ static void extract_wiki_block_style(const unsigned char *line, bufsize_t len,
     while (q < len && line[q] != '"') {
       q++;
     }
-    if (q > pos + 1 && q < len && line[q] == '"') {
+    if (q >= pos + 1 && q < len && line[q] == '"') {
       *style_start = pos + 1;
       *style_len = q - (pos + 1);
       return;
@@ -662,7 +662,14 @@ static int line_has_trailing_table_sep(const unsigned char *line, bufsize_t len)
   while (end > 0 && line[end - 1] == ' ') {
     end--;
   }
-  return end >= 2 && line[end - 2] == '|' && line[end - 1] == '|';
+  if (end >= 2 && line[end - 2] == '|' && line[end - 1] == '|') {
+    return 1;
+  }
+  if (end >= 5 && line[end - 5] == '}' && line[end - 4] == '}' && line[end - 3] == '}' &&
+      line[end - 2] == '|' && line[end - 1] == '|') {
+    return 1;
+  }
+  return 0;
 }
 
 static int is_empty_table_row_line(const unsigned char *line, bufsize_t len) {
@@ -672,6 +679,20 @@ static int is_empty_table_row_line(const unsigned char *line, bufsize_t len) {
     end--;
   }
   return end == start + 2 && line[start] == '|' && line[start + 1] == '|';
+}
+
+static int table_content_ends_with_wiki_close(const namumark_node *table) {
+  if (table == NULL || table->content.size < 3) {
+    return 0;
+  }
+
+  bufsize_t end = table->content.size;
+  while (end > 0 && (table->content.ptr[end - 1] == ' ' || table->content.ptr[end - 1] == '\n' ||
+                     table->content.ptr[end - 1] == '\r')) {
+    end--;
+  }
+  return end >= 3 && table->content.ptr[end - 3] == '}' && table->content.ptr[end - 2] == '}' &&
+         table->content.ptr[end - 1] == '}';
 }
 
 static void update_table_wiki_depth(namumark_parser *parser, const unsigned char *line,
@@ -1084,6 +1105,23 @@ void process_line(namumark_parser *parser) {
 
   if (parser->table_continuation && parser->root->last_child != NULL &&
       parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
+      is_empty_table_row_line(line, len) &&
+      (parser->table_wiki_block_depth <= 0 || table_content_ends_with_wiki_close(parser->root->last_child))) {
+    namumark_node *table = parser->root->last_child;
+    strbuf_putc(&table->content, '\n');
+    strbuf_put(&table->content, line, len);
+    table->end_line = parser->line_number;
+    table->end_column = (int)len;
+    parser->table_continuation = false;
+    parser->table_wiki_block_depth = 0;
+    parser->table_wiki_nonwiki_depth = 0;
+
+    strbuf_clear(&parser->current_line);
+    return;
+  }
+
+  if (parser->table_continuation && parser->root->last_child != NULL &&
+      parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
       (!is_table_row_start(line, len) || parser->table_wiki_nonwiki_depth > 0)) {
     namumark_node *table = parser->root->last_child;
     strbuf_putc(&table->content, '\n');
@@ -1264,6 +1302,20 @@ void process_line(namumark_parser *parser) {
   }
 
   if (is_table_row_start(line, len)) {
+    if (!parser->table_continuation && is_empty_table_row_line(line, len) &&
+        parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_TABLE) {
+      namumark_node *table = parser->root->last_child;
+      strbuf_putc(&table->content, '\n');
+      strbuf_put(&table->content, line, len);
+      table->end_line = parser->line_number;
+      table->end_column = (int)len;
+      parser->table_wiki_block_depth = 0;
+      parser->table_wiki_nonwiki_depth = 0;
+
+      strbuf_clear(&parser->current_line);
+      return;
+    }
+
     if (!parser->table_continuation || parser->table_wiki_block_depth <= 0) {
       parser->table_wiki_block_depth = 0;
       parser->table_wiki_nonwiki_depth = 0;

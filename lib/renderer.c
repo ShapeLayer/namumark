@@ -564,8 +564,14 @@ static int is_list_continuation_text(const namumark_node *node) {
          node->content.ptr[0] == ' ';
 }
 
+static int is_list_continuation_table(const namumark_node *node) {
+  return node != NULL && node->type == NAMUMARK_NODE_TABLE && node->content.size > 0 &&
+         node->content.ptr[0] == ' ';
+}
+
 static int is_rendered_list_sequence_node(const namumark_node *node) {
-  return node != NULL && (node->type == NAMUMARK_NODE_LIST || is_list_continuation_text(node));
+  return node != NULL && (node->type == NAMUMARK_NODE_LIST || is_list_continuation_text(node) ||
+                          is_list_continuation_table(node));
 }
 
 static int is_footnote_macro_only_text(const namumark_node *node) {
@@ -1094,7 +1100,9 @@ static int is_row_start_line(const unsigned char *line, bufsize_t len) {
 
 typedef struct table_render_style {
   strbuf align;
+  strbuf valign;
   strbuf width;
+  strbuf height;
   strbuf bgcolor;
   strbuf color;
   int colspan;
@@ -1113,7 +1121,9 @@ typedef struct table_render_context {
 
 static void table_style_init(table_render_style *style) {
   strbuf_init(&style->align, 16);
+  strbuf_init(&style->valign, 16);
   strbuf_init(&style->width, 32);
+  strbuf_init(&style->height, 32);
   strbuf_init(&style->bgcolor, 32);
   strbuf_init(&style->color, 32);
   style->colspan = 0;
@@ -1123,7 +1133,9 @@ static void table_style_init(table_render_style *style) {
 
 static void table_style_free(table_render_style *style) {
   strbuf_free(&style->align);
+  strbuf_free(&style->valign);
   strbuf_free(&style->width);
+  strbuf_free(&style->height);
   strbuf_free(&style->bgcolor);
   strbuf_free(&style->color);
 }
@@ -1202,6 +1214,24 @@ static void parse_table_token(const unsigned char *token, bufsize_t token_len,
     return;
   }
 
+  if (token[0] == '^' && token_len > 1 && token[1] == '|') {
+    int span = parse_positive_int(token + 2, token_len - 2);
+    if (span > 0) {
+      cell_style->rowspan = span;
+    }
+    strbuf_set(&cell_style->valign, (const unsigned char *)"top", 3);
+    return;
+  }
+
+  if (token[0] == 'v' && token_len > 1 && token[1] == '|') {
+    int span = parse_positive_int(token + 2, token_len - 2);
+    if (span > 0) {
+      cell_style->rowspan = span;
+    }
+    strbuf_set(&cell_style->valign, (const unsigned char *)"bottom", 6);
+    return;
+  }
+
   if (token[0] == '|') {
     int span = parse_positive_int(token + 1, token_len - 1);
     if (span > 0) {
@@ -1226,6 +1256,10 @@ static void parse_table_token(const unsigned char *token, bufsize_t token_len,
 
   if (key_len == 5 && memcmp(token, "width", 5) == 0) {
     strbuf_set(&cell_style->width, val, val_len);
+    return;
+  }
+  if (key_len == 6 && memcmp(token, "height", 6) == 0) {
+    strbuf_set(&cell_style->height, val, val_len);
     return;
   }
   if (key_len == 7 && memcmp(token, "bgcolor", 7) == 0) {
@@ -1279,6 +1313,10 @@ static void parse_table_token(const unsigned char *token, bufsize_t token_len,
     return;
   }
   if (key_len == 16 && memcmp(token, "tablebordercolor", 16) == 0) {
+    set_primary_value(&table_style->bordercolor, val, val_len);
+    return;
+  }
+  if (key_len == 17 && memcmp(token, "table bordercolor", 17) == 0) {
     set_primary_value(&table_style->bordercolor, val, val_len);
     return;
   }
@@ -2079,6 +2117,12 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
   bufsize_t p = s + 2;
   int cell_index = 0;
   while (p < line_end) {
+    int implicit_colspan = 1;
+    while (p + 1 < line_end && row->ptr[p] == '|' && row->ptr[p + 1] == '|') {
+      implicit_colspan++;
+      p += 2;
+    }
+
     bufsize_t sep = find_table_cell_separator(row->ptr, p, line_end);
 
     bufsize_t cell_start = p;
@@ -2098,11 +2142,23 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
 
     table_render_style cell_style;
     table_style_init(&cell_style);
+    cell_style.colspan = implicit_colspan;
     bufsize_t content_start = 0;
     parse_cell_prefix(&cell, table_style, &row_style, &cell_style, &content_start);
 
     bufsize_t content_end = cell.size;
     trim_spaces(&cell, &content_start, &content_end);
+
+    if (implicit_colspan > 1 && content_start >= content_end) {
+      table_style_free(&cell_style);
+      strbuf_free(&cell);
+      if (sep < 0 || sep + 1 >= line_end) {
+        break;
+      }
+      cell_index += implicit_colspan;
+      p = sep + 2;
+      continue;
+    }
 
     const char *tag = "td";
     if (fputs("<", out) < 0 || fputs(tag, out) < 0) {
@@ -2141,11 +2197,30 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
         return 0;
       }
     }
+    if (cell_style.height.size > 0) {
+      if (fputs("height:", out) < 0 || !print_html_escaped(out, &cell_style.height) ||
+          fputs("px;", out) < 0) {
+        table_style_free(&cell_style);
+        strbuf_free(&cell);
+        table_style_free(&row_style);
+        return 0;
+      }
+    }
 
     const strbuf *align = (cell_style.align.size > 0) ? &cell_style.align :
                           (row_style.align.size > 0) ? &row_style.align : NULL;
     if (align != NULL && align->size > 0) {
       if (fputs("text-align:", out) < 0 || !print_html_escaped(out, align) || fputs(";", out) < 0) {
+        table_style_free(&cell_style);
+        strbuf_free(&cell);
+        table_style_free(&row_style);
+        return 0;
+      }
+    }
+
+    if (cell_style.valign.size > 0) {
+      if (fputs("vertical-align:", out) < 0 || !print_html_escaped(out, &cell_style.valign) ||
+          fputs(";", out) < 0) {
         table_style_free(&cell_style);
         strbuf_free(&cell);
         table_style_free(&row_style);
@@ -2331,6 +2406,24 @@ static int render_block_node(FILE *out, const namumark_node *node) {
           int spaces = count_leading_spaces_in_node(continuation);
           bufsize_t start = spaces >= continuation_target ? (bufsize_t)continuation_target :
                                                             (bufsize_t)spaces;
+          if (continuation->type == NAMUMARK_NODE_TABLE) {
+            namumark_node table_copy = *continuation;
+            table_copy.first_child = NULL;
+            table_copy.last_child = NULL;
+            table_copy.next = NULL;
+            table_copy.prev = NULL;
+            strbuf_init(&table_copy.content, continuation->content.size - start + 1);
+            if (start < continuation->content.size) {
+              strbuf_put(&table_copy.content, continuation->content.ptr + start,
+                         continuation->content.size - start);
+            }
+            int ok = render_block_node(out, &table_copy);
+            strbuf_free(&table_copy.content);
+            if (!ok) {
+              return 0;
+            }
+            continue;
+          }
           strbuf body;
           strbuf_init(&body, continuation->content.size - start + 1);
           if (start < continuation->content.size) {
