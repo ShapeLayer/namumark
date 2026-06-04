@@ -997,6 +997,31 @@ static int render_wrapped_literal_body(FILE *out, const strbuf *body) {
   if (end < 6 || memcmp(body->ptr + end - 3, "}}}", 3) != 0) {
     return 0;
   }
+
+  int depth = 1;
+  bufsize_t close = -1;
+  for (bufsize_t i = 3; i + 2 < end;) {
+    if (body->ptr[i] == '{' && body->ptr[i + 1] == '{' && body->ptr[i + 2] == '{') {
+      depth++;
+      i += 3;
+      continue;
+    }
+    if (body->ptr[i] == '}' && body->ptr[i + 1] == '}' && body->ptr[i + 2] == '}') {
+      depth--;
+      if (depth == 0) {
+        close = i;
+        break;
+      }
+      i += 3;
+      continue;
+    }
+    i++;
+  }
+
+  if (close != end - 3) {
+    return 0;
+  }
+
   if (body->size > 4 && body->ptr[3] == '#' && body->ptr[4] == '!') {
     return 0;
   }

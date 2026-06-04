@@ -299,6 +299,36 @@ TEST(RendererTest, TableCellRendersNestedAdvancedLiteral) {
   parser_free(parser);
 }
 
+TEST(RendererTest, TableCellAdjacentLiteralCodeSpansRemainSeparate) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "|| {{{[목차]}}} 또는 {{{[tableofcontents]}}} || 목차 출력 ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<code>[목차]</code> 또는 <code>[tableofcontents]</code>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("[목차]}}} 또는 {{{[tableofcontents]"), std::string::npos);
+  EXPECT_EQ(html.find("<pre><code>[목차]"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, InlineWikiAdvancedCreatesChildBlocks) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
