@@ -23,6 +23,8 @@ typedef struct namumark_parser {
   bool last_buffer_endded_with_cr;
   bool ignore_remaining_lines;
   bool table_continuation;
+  int table_wiki_block_depth;
+  int table_wiki_nonwiki_depth;
   int wiki_block_depth;
   int wiki_nonwiki_depth;
   int advanced_brace_depth;

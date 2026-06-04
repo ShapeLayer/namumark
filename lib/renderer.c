@@ -287,6 +287,24 @@ static int print_html_escaped(FILE *out, const strbuf *value) {
 
 static int render_inline_node(FILE *out, const namumark_node *node);
 static int render_block_node(FILE *out, const namumark_node *node);
+static int render_block_children(FILE *out, const namumark_node *parent);
+
+static int is_list_continuation_text(const namumark_node *node) {
+  return node != NULL && node->type == NAMUMARK_NODE_TEXT && node->content.size > 0 &&
+         node->content.ptr[0] == ' ';
+}
+
+static int is_rendered_list_sequence_node(const namumark_node *node) {
+  return node != NULL && (node->type == NAMUMARK_NODE_LIST || is_list_continuation_text(node));
+}
+
+static int count_leading_spaces_in_node(const namumark_node *node) {
+  int spaces = 0;
+  while ((bufsize_t)spaces < node->content.size && node->content.ptr[spaces] == ' ') {
+    spaces++;
+  }
+  return spaces;
+}
 
 static int render_inline_children(FILE *out, const namumark_node *parent) {
   if (parent->first_child == NULL) {
@@ -339,6 +357,20 @@ static int render_advanced_content(FILE *out, const strbuf *content) {
   }
 
   return ok;
+}
+
+static int has_nested_link_markup(const strbuf *value) {
+  if (value == NULL || value->size < 2) {
+    return 0;
+  }
+
+  for (bufsize_t i = 0; i + 1 < value->size; i++) {
+    if (value->ptr[i] == '[' && value->ptr[i + 1] == '[') {
+      return 1;
+    }
+  }
+
+  return 0;
 }
 
 static int render_raw_bytes(FILE *out, const unsigned char *data, bufsize_t len) {
@@ -604,13 +636,9 @@ static int render_wiki_advanced_block(FILE *out, const namumark_node *node) {
     return 0;
   }
 
-  const namumark_node *child = doc->first_child;
-  while (child != NULL) {
-    if (!render_block_node(out, child)) {
-      namumark_node_free(doc);
-      return 0;
-    }
-    child = child->next;
+  if (!render_block_children(out, doc)) {
+    namumark_node_free(doc);
+    return 0;
   }
   namumark_node_free(doc);
 
@@ -639,7 +667,11 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
         return 0;
       }
       if (node->args.size > 0) {
-        if (!render_advanced_content(out, &node->args)) {
+        if (has_nested_link_markup(&node->args)) {
+          if (!print_html_escaped(out, &node->args)) {
+            return 0;
+          }
+        } else if (!render_advanced_content(out, &node->args)) {
           return 0;
         }
       } else if (!render_inline_children(out, node)) {
@@ -1017,6 +1049,48 @@ static bufsize_t find_table_cell_separator(const unsigned char *line, bufsize_t 
   return -1;
 }
 
+static int table_row_ends_with_separator(const strbuf *row) {
+  if (row == NULL || row->size < 2) {
+    return 0;
+  }
+
+  bufsize_t end = row->size;
+  while (end > 0 && (row->ptr[end - 1] == ' ' || row->ptr[end - 1] == '\n' ||
+                     row->ptr[end - 1] == '\r')) {
+    end--;
+  }
+  if (end < 2) {
+    return 0;
+  }
+
+  int brace_depth = 0;
+  bufsize_t last_sep = -1;
+  for (bufsize_t i = 0; i + 1 < end; i++) {
+    if (i + 2 < end && row->ptr[i] == '{' && row->ptr[i + 1] == '{' &&
+        row->ptr[i + 2] == '{') {
+      brace_depth++;
+      i += 2;
+      continue;
+    }
+
+    if (i + 2 < end && row->ptr[i] == '}' && row->ptr[i + 1] == '}' &&
+        row->ptr[i + 2] == '}') {
+      if (brace_depth > 0) {
+        brace_depth--;
+      }
+      i += 2;
+      continue;
+    }
+
+    if (brace_depth == 0 && row->ptr[i] == '|' && row->ptr[i + 1] == '|') {
+      last_sep = i;
+      i++;
+    }
+  }
+
+  return last_sep + 2 == end;
+}
+
 static void collect_table_style_from_row(const unsigned char *line, bufsize_t line_len,
                                          table_render_context *table_style) {
   bufsize_t s = 0;
@@ -1191,12 +1265,18 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
       if (wiki_advanced.size > 0) {
         strbuf_putc(&wiki_advanced, '\n');
       }
-      if (e > s) {
-        strbuf_put(&wiki_advanced, text + s, e - s);
+      bufsize_t wiki_line_end = line_end;
+      if (wiki_line_end > line_start && text[wiki_line_end - 1] == '\r') {
+        wiki_line_end--;
+      }
+      if (wiki_line_end > line_start) {
+        strbuf_put(&wiki_advanced, text + line_start, wiki_line_end - line_start);
       }
 
-      wiki_advanced_depth += count_token_occurrences(text + s, e - s, "{{{", 3);
-      wiki_advanced_depth -= count_token_occurrences(text + s, e - s, "}}}", 3);
+      wiki_advanced_depth += count_token_occurrences(text + line_start,
+                                                      wiki_line_end - line_start, "{{{", 3);
+      wiki_advanced_depth -= count_token_occurrences(text + line_start,
+                                                      wiki_line_end - line_start, "}}}", 3);
 
       if (wiki_advanced_depth <= 0) {
         if (!render_inline_snippet(out, wiki_advanced.ptr, wiki_advanced.size)) {
@@ -1267,44 +1347,68 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     }
 
     int is_list = 0;
+    int list_indent = 0;
     bufsize_t list_start = s;
-    if (list_start < e && text[list_start] == '*' &&
-        (list_start + 1 >= e || text[list_start + 1] == ' ')) {
-      is_list = 1;
-      if (list_start + 1 < e && text[list_start + 1] == ' ') {
-        list_start += 2;
-      } else {
-        list_start += 1;
+
+    {
+      bufsize_t leading = line_start;
+      while (leading < line_end && text[leading] == ' ') {
+        leading++;
+        list_indent++;
+      }
+      if (leading < line_end && text[leading] == '*' &&
+          (leading + 1 >= line_end || text[leading + 1] == ' ')) {
+        is_list = 1;
+        list_start = leading + 1;
+        if (list_start < line_end && text[list_start] == ' ') {
+          list_start++;
+        }
       }
     }
 
     if (is_list) {
-      if (!in_list) {
+      while (in_list > list_indent) {
+        if (fputs("</li></ul>", out) < 0) {
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        in_list--;
+      }
+      while (in_list < list_indent) {
+        if (fputs("<ul><li>", out) < 0) {
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        in_list++;
+      }
+
+      if (in_list == 0) {
         if (fputs("<ul>", out) < 0) {
           strbuf_free(&wiki_advanced);
           return 0;
         }
         in_list = 1;
-      }
-      if (fputs("<li>", out) < 0) {
-        strbuf_free(&wiki_advanced);
-        return 0;
+        if (fputs("<li>", out) < 0) {
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+      } else {
+        if (fputs("</li>\n<li>", out) < 0) {
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
       }
       if (!render_inline_snippet(out, text + list_start, e - list_start)) {
         strbuf_free(&wiki_advanced);
         return 0;
       }
-      if (fputs("</li>", out) < 0) {
-        strbuf_free(&wiki_advanced);
-        return 0;
-      }
     } else {
-      if (in_list) {
-        if (fputs("</ul>", out) < 0) {
+      while (in_list > 0) {
+        if (fputs("</li></ul>", out) < 0) {
           strbuf_free(&wiki_advanced);
           return 0;
         }
-        in_list = 0;
+        in_list--;
       }
 
       if (is_horizontal_rule_text(text + s, e - s)) {
@@ -1331,9 +1435,12 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     line_start = line_end + 1;
   }
 
-  if (in_list && fputs("</ul>", out) < 0) {
-    strbuf_free(&wiki_advanced);
-    return 0;
+  while (in_list > 0) {
+    if (fputs("</li></ul>", out) < 0) {
+      strbuf_free(&wiki_advanced);
+      return 0;
+    }
+    in_list--;
   }
 
   if (wiki_advanced.size > 0) {
@@ -1543,35 +1650,156 @@ static int render_block_node(FILE *out, const namumark_node *node) {
       }
       return 1;
     case NAMUMARK_NODE_LIST: {
-      const char *tag = "ul";
-      if (node->list_marker != NAMUMARK_LIST_MARKER_BULLET) {
-        tag = "ol";
-      }
-      if (fprintf(out, "<%s", tag) < 0) {
-        return 0;
-      }
-      if (strcmp(tag, "ol") == 0 && node->start_number > 1) {
-        if (fprintf(out, " start=\"%d\"", node->start_number) < 0) {
-          return 0;
+      /* Collect all consecutive LIST siblings to render as one nested tree */
+      const namumark_node *first_list = node;
+      /* Gather sibling list nodes that follow immediately */
+
+      /* Helper: render a list-item group with indent depth using a stack-based approach.
+         We walk sibling LIST nodes and nest by item->indent. */
+
+      /* Build a flat array of (indent, marker, start_number, item_content_ptr) then tree-render. */
+      #define NM_MAX_LIST_ITEMS 512
+      typedef struct {
+        int indent;
+        const namumark_node *item_node;
+        const namumark_node *continuation_node;
+        const char *tag;
+      } nm_list_entry;
+      nm_list_entry entries[NM_MAX_LIST_ITEMS];
+      int entry_count = 0;
+
+      const namumark_node *walk = first_list;
+      while (walk != NULL && is_rendered_list_sequence_node(walk)) {
+        if (walk->type == NAMUMARK_NODE_LIST) {
+          const namumark_node *item = walk->first_child;
+          while (item != NULL) {
+            if (item->type == NAMUMARK_NODE_LIST_ITEM && entry_count < NM_MAX_LIST_ITEMS) {
+              const char *t = "ul";
+              if (item->list_marker != NAMUMARK_LIST_MARKER_BULLET && item->list_marker != NAMUMARK_LIST_MARKER_NONE) {
+                t = "ol";
+              }
+              entries[entry_count].indent = item->indent > 0 ? item->indent : 1;
+              entries[entry_count].item_node = item;
+              entries[entry_count].continuation_node = NULL;
+              entries[entry_count].tag = t;
+              entry_count++;
+            }
+            item = item->next;
+          }
+        } else if (entry_count > 0) {
+          int continuation_indent = count_leading_spaces_in_node(walk);
+          int spaces_only = (bufsize_t)continuation_indent >= walk->content.size;
+          if (spaces_only || continuation_indent >= entries[entry_count - 1].indent) {
+            entries[entry_count].indent = continuation_indent;
+            entries[entry_count].item_node = NULL;
+            entries[entry_count].continuation_node = walk;
+            entries[entry_count].tag = entries[entry_count - 1].tag;
+            entry_count++;
+          } else {
+            break;
+          }
         }
-      }
-      if (fputs(">\n", out) < 0) {
-        return 0;
+        walk = walk->next;
       }
 
-      const namumark_node *item = node->first_child;
-      while (item != NULL) {
-        if (item->type == NAMUMARK_NODE_LIST_ITEM) {
-          if (fputs("<li>", out) < 0 || !render_inline_children(out, item) ||
-              fputs("</li>\n", out) < 0) {
+      /* Render with stack tracking current depth */
+      int depth_stack[NM_MAX_LIST_ITEMS + 1];
+      const char *tag_stack[NM_MAX_LIST_ITEMS + 1];
+      int stack_top = 0;
+
+      for (int idx = 0; idx < entry_count; idx++) {
+        int target = entries[idx].indent;
+        const char *etag = entries[idx].tag;
+        const namumark_node *ei = entries[idx].item_node;
+        const namumark_node *continuation = entries[idx].continuation_node;
+
+        if (continuation != NULL) {
+          int continuation_target = target;
+          while (stack_top > 0 && depth_stack[stack_top - 1] > target) {
+            if (fprintf(out, "</li></%s>\n", tag_stack[stack_top - 1]) < 0) {
+              return 0;
+            }
+            stack_top--;
+          }
+          if (stack_top > 0) {
+            continuation_target = depth_stack[stack_top - 1];
+          }
+          if (fputs("<br />", out) < 0) {
+            return 0;
+          }
+          int spaces = count_leading_spaces_in_node(continuation);
+          bufsize_t start = spaces >= continuation_target ? (bufsize_t)continuation_target :
+                                                            (bufsize_t)spaces;
+          strbuf body;
+          strbuf_init(&body, continuation->content.size - start + 1);
+          if (start < continuation->content.size) {
+            strbuf_put(&body, continuation->content.ptr + start,
+                       continuation->content.size - start);
+          }
+          namumark_node fake_parent = {0};
+          strbuf_init(&fake_parent.content, body.size + 1);
+          strbuf_set(&fake_parent.content, body.ptr, body.size);
+          parse_inlines(&body, &fake_parent, continuation->start_line);
+          int ok = render_inline_children(out, &fake_parent);
+          strbuf_free(&fake_parent.content);
+          namumark_node *child = fake_parent.first_child;
+          while (child != NULL) {
+            namumark_node *next = child->next;
+            namumark_node_free(child);
+            child = next;
+          }
+          strbuf_free(&body);
+          if (!ok) {
+            return 0;
+          }
+          continue;
+        }
+
+        /* Close deeper levels */
+        while (stack_top > 0 && depth_stack[stack_top - 1] > target) {
+          if (fprintf(out, "</li></%s>\n", tag_stack[stack_top - 1]) < 0) {
+            return 0;
+          }
+          stack_top--;
+        }
+
+        if (stack_top == 0 || depth_stack[stack_top - 1] < target) {
+          /* Open a new list level */
+          if (stack_top > 0) {
+            /* This is a deeper nesting, open inside current <li> */
+          } else {
+            /* Fresh open */
+          }
+          if (fprintf(out, "<%s>\n", etag) < 0) {
+            return 0;
+          }
+          depth_stack[stack_top] = target;
+          tag_stack[stack_top] = etag;
+          stack_top++;
+          if (fputs("<li>", out) < 0 || !render_inline_children(out, ei)) {
+            return 0;
+          }
+        } else {
+          /* Same depth: close previous item, open next */
+          if (fprintf(out, "</li>\n<li>") < 0 || !render_inline_children(out, ei)) {
             return 0;
           }
         }
-        item = item->next;
       }
-      if (fprintf(out, "</%s>\n", tag) < 0) {
-        return 0;
+
+      /* Close all open levels */
+      while (stack_top > 0) {
+        stack_top--;
+        if (fprintf(out, "</li></%s>\n", tag_stack[stack_top]) < 0) {
+          return 0;
+        }
       }
+      #undef NM_MAX_LIST_ITEMS
+
+      /* Skip siblings that were already consumed above */
+      /* Caller (render_document) iterates child->next which will skip them properly
+         since we don't modify node; but we need to return after consuming multiple.
+         Use a static sentinel trick: handled by rendering them flatly; done. */
       return 1;
     }
     case NAMUMARK_NODE_BLOCKQUOTE:
@@ -1695,18 +1923,23 @@ static int render_block_node(FILE *out, const namumark_node *node) {
           const unsigned char *line_ptr = tablebuf.ptr + line_start;
           bufsize_t line_len = line_end - line_start;
 
-            if (is_row_start_line(line_ptr, line_len)) {
-              if (pending_row.size > 0) {
-                if (!render_table_row(out, &pending_row, row_index, &table_style)) {
-                  strbuf_free(&pending_row);
-                  strbuf_free(&tablebuf);
-                  table_context_free(&table_style);
-                  return 0;
-                }
-                row_index++;
+          if (is_row_start_line(line_ptr, line_len)) {
+            if (pending_row.size > 0 && table_row_ends_with_separator(&pending_row)) {
+              if (!render_table_row(out, &pending_row, row_index, &table_style)) {
+                strbuf_free(&pending_row);
+                strbuf_free(&tablebuf);
+                table_context_free(&table_style);
+                return 0;
+              }
+              row_index++;
               strbuf_clear(&pending_row);
             }
-            strbuf_set(&pending_row, line_ptr, line_len);
+            if (pending_row.size > 0) {
+              strbuf_putc(&pending_row, '\n');
+              strbuf_put(&pending_row, line_ptr, line_len);
+            } else {
+              strbuf_set(&pending_row, line_ptr, line_len);
+            }
           } else if (pending_row.size > 0) {
             strbuf_putc(&pending_row, '\n');
             strbuf_put(&pending_row, line_ptr, line_len);
@@ -1772,13 +2005,9 @@ static int render_block_node(FILE *out, const namumark_node *node) {
         return 0;
       }
 
-      const namumark_node *child = subdoc->first_child;
-      while (child != NULL) {
-        if (!render_block_node(out, child)) {
-          namumark_node_free(subdoc);
-          return 0;
-        }
-        child = child->next;
+      if (!render_block_children(out, subdoc)) {
+        namumark_node_free(subdoc);
+        return 0;
       }
 
       namumark_node_free(subdoc);
@@ -1819,6 +2048,23 @@ static int render_block_node(FILE *out, const namumark_node *node) {
   }
 }
 
+static int render_block_children(FILE *out, const namumark_node *parent) {
+  const namumark_node *child = parent->first_child;
+  while (child != NULL) {
+    if (!render_block_node(out, child)) {
+      return 0;
+    }
+    /* If LIST, skip following LIST siblings (already consumed inside render_block_node) */
+    if (child->type == NAMUMARK_NODE_LIST) {
+      while (child->next != NULL && is_rendered_list_sequence_node(child->next)) {
+        child = child->next;
+      }
+    }
+    child = child->next;
+  }
+  return 1;
+}
+
 int print_document_html(const namumark_node *document, FILE *out) {
   if (document == NULL || out == NULL) {
     return 0;
@@ -1828,12 +2074,8 @@ int print_document_html(const namumark_node *document, FILE *out) {
     return 0;
   }
 
-  const namumark_node *child = document->first_child;
-  while (child != NULL) {
-    if (!render_block_node(out, child)) {
-      return 0;
-    }
-    child = child->next;
+  if (!render_block_children(out, document)) {
+    return 0;
   }
 
   if (fputs("</article>\n", out) < 0) {

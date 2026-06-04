@@ -448,6 +448,127 @@ TEST(RendererTest, NestedFileLinkLabelRendersWithoutBrokenAnchor) {
             std::string::npos);
   EXPECT_EQ(html.find("<a href=\"나무위키\">[[파일:나무위키:로고2.png|width=25</a>]]"),
             std::string::npos);
+  EXPECT_EQ(html.find("<a href=\"나무위키\"><a href=\"파일:나무위키:로고2.png\">"),
+            std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, MobileImageSectionPreBlocksDoNotLeakClosersOrSwallowHeading) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{||<width=50%><nopad> [[파일:example.png|width=100%]] ||<width=50%><nopad> [[파일:example.png|width=100%]] ||\n"
+      "|| 설명 1 || 설명 2 ||}}}위의 방식보다는 아래 방식이 권장됩니다.\n"
+      "{{{||<nopad> [[파일:example.png|width=100%]] ||<nopad> [[파일:example.png|width=100%]] ||\n"
+      "||<width=50%> 설명 1 ||<width=50%> 설명 2 ||}}}[각주]\n"
+      "== 동영상 ==\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("위의 방식보다는 아래 방식이 권장됩니다."), std::string::npos);
+  EXPECT_NE(html.find("<h2>동영상</h2>"), std::string::npos);
+  EXPECT_EQ(html.find("|| 설명 1 || 설명 2 ||}}}위의 방식보다는"), std::string::npos);
+  EXPECT_EQ(html.find("||<width=50%> 설명 1 ||<width=50%> 설명 2 ||}}}[각주]"),
+            std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, NestedListRendersHierarchically) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki\n"
+      " * 리스트 1\n"
+      "  * 리스트 1.1\n"
+      " * 리스트 2\n"
+      "  * 리스트 2.1\n"
+      "   * 리스트 2.1.1}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<li>리스트 1<ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 1.1</li></ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 2.1<ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 2.1.1</li></ul>"), std::string::npos);
+  EXPECT_EQ(html.find("</ul>\n<ul>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, WikiBlockListInTableCellPreservesIndentation) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<tablebgcolor=transparent><rowbgcolor=#00a495,#00a495><rowcolor=#fff> 입력 || 출력 ||\n"
+      "||{{{#!wiki style=\"font-family: monospace\"\n"
+      "{{{#red ○}}}* 리스트 1\n"
+      "{{{#red ○○}}}* 리스트 1.1\n"
+      "{{{#red ○}}}* 리스트 2\n"
+      "{{{#red ○○}}}* 리스트 2.1\n"
+      "{{{#red ○○○}}}* 리스트 2.1.1}}}\n"
+      "||{{{#!wiki\n"
+      " * 리스트 1\n"
+      "  * 리스트 1.1\n"
+      " * 리스트 2\n"
+      "  * 리스트 2.1\n"
+      "   * 리스트 2.1.1}}}\n"
+      "||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<table class=\"nm-table\""), std::string::npos);
+  EXPECT_NE(html.find("</div></td><td style=\"\"><div><div class=\"nm-wiki-block\"><ul>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 1<ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 1.1</li></ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 2.1<ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>리스트 2.1.1</li></ul>"), std::string::npos);
+  EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
+  EXPECT_EQ(html.find("</ul>\n<ul>"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);
@@ -478,6 +599,87 @@ TEST(RendererTest, TableRowDoesNotAddTrailingEmptyCell) {
   EXPECT_NE(html.find("<td style=\"width:60;background-color:#00a495;color:#fff;\"><div>유형</div></td><td"), std::string::npos);
   EXPECT_EQ(html.find("<td style=\"background-color:#00a495;color:#fff;\"><div></div></td>"), std::string::npos);
   EXPECT_EQ(html.find("<td style=\"\"><div></div></td></tr>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, WikiBlockListContinuationTextStaysInListItem) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki\n"
+      " * 리스트\n"
+      " 내에서의 개행\n"
+      " * 매크로를 이용한[br]리스트 내의 개행}}}\n"
+      "{{{#!wiki\n"
+      " A. list 1\n"
+      "  A. list 1-1\n"
+      "  \n"
+      "  A. list 1-2\n"
+      " \n"
+      " A. list 2\n"
+      " \n"
+      " A. list 3}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<li>리스트<br />내에서의 개행</li>"), std::string::npos);
+  EXPECT_NE(html.find("<li>list 1-1<br /></li>"), std::string::npos);
+  EXPECT_NE(html.find("<li>list 2<br /></li>"), std::string::npos);
+  EXPECT_EQ(html.find("<p> 내에서의 개행</p>"), std::string::npos);
+  EXPECT_EQ(html.find("</ol>\n<ol>\n<li>list 1-2"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, ClosedMultilineWikiTableRowDoesNotSwallowFollowingBlocks) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<tablebgcolor=transparent><rowbgcolor=#00a495,#00a495><rowcolor=#fff> 입력 || 출력 ||\n"
+      "||{{{#!wiki\n"
+      " * 잘못된 방식\n"
+      "{{{#!wiki style=\"margin-top: -21px; margin-bottom: 1rem\"\n"
+      "띄어쓰지 않으면}}}\n"
+      " * 리스트가 이어지지 않음}}}||\n"
+      "리스트를 유지하면서 개행을 넣고자 한다면 설명 문단입니다.\n"
+      "||<tablebgcolor=transparent><rowbgcolor=#00a495,#00a495><rowcolor=#fff> 다음 입력 || 다음 출력 ||\n"
+      "|| A || B ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("</tbody></table>\n<p>리스트를 유지하면서 개행을 넣고자 한다면 설명 문단입니다.</p>\n<table"),
+            std::string::npos);
+  EXPECT_EQ(html.find("리스트를 유지하면서 개행을 넣고자 한다면 설명 문단입니다.</div></td>"),
+            std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);

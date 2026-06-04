@@ -509,53 +509,6 @@ static void extract_wiki_block_style(const unsigned char *line, bufsize_t len,
   }
 }
 
-static int count_wiki_block_starts(const unsigned char *line, bufsize_t len) {
-  static const char token[] = "{{{#!wiki";
-  static const bufsize_t token_len = sizeof(token) - 1;
-
-  bufsize_t s = skip_spaces(line, len, 0);
-  if (s + token_len > len) {
-    return 0;
-  }
-
-  int has_table_sep = 0;
-  for (bufsize_t i = s; i + 1 < len; i++) {
-    if (line[i] == '|' && line[i + 1] == '|') {
-      has_table_sep = 1;
-      break;
-    }
-  }
-
-  if (!is_table_row_start(line, len) && !has_table_sep) {
-    return (memcmp(line + s, token, (size_t)token_len) == 0) ? 1 : 0;
-  }
-
-  int count = 0;
-  for (bufsize_t i = s; i + token_len <= len; i++) {
-    if (memcmp(line + i, token, (size_t)token_len) != 0) {
-      continue;
-    }
-
-    if (i > 0 && line[i - 1] == '{') {
-      continue;
-    }
-
-    int closes_on_same_line = 0;
-    for (bufsize_t j = i + token_len; j + 2 < len; j++) {
-      if (line[j] == '}' && line[j + 1] == '}' && line[j + 2] == '}') {
-        closes_on_same_line = 1;
-        break;
-      }
-    }
-
-    if (!closes_on_same_line) {
-      count++;
-    }
-  }
-
-  return count;
-}
-
 static int count_wiki_block_trailing_ends(const unsigned char *line, bufsize_t len,
                                           bufsize_t *content_end) {
   bufsize_t trimmed_end = len;
@@ -700,6 +653,24 @@ static int line_ends_with_table_sep(const unsigned char *line, bufsize_t len) {
   return tail >= len;
 }
 
+static void update_table_wiki_depth(namumark_parser *parser, const unsigned char *line,
+                                    bufsize_t len) {
+  int starts = 0;
+  int ends = 0;
+  int nonwiki_final = parser->table_wiki_nonwiki_depth;
+  scan_wiki_line_depth(line, len, parser->table_wiki_nonwiki_depth, &starts, &ends,
+                       &nonwiki_final);
+  parser->table_wiki_nonwiki_depth = nonwiki_final;
+  parser->table_wiki_block_depth += starts;
+  parser->table_wiki_block_depth -= ends;
+  if (parser->table_wiki_block_depth < 0) {
+    parser->table_wiki_block_depth = 0;
+  }
+}
+
+static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigned char *line,
+                                          bufsize_t len);
+
 static void append_text_tail_as_block(namumark_parser *parser, const unsigned char *line,
                                       bufsize_t len) {
   if (parser == NULL || line == NULL || len <= 0) {
@@ -710,6 +681,95 @@ static void append_text_tail_as_block(namumark_parser *parser, const unsigned ch
   if (text != NULL) {
     parse_inlines(&text->content, text, parser->line_number);
   }
+}
+
+static void process_advanced_close_tail(namumark_parser *parser, const unsigned char *tail_line,
+                                        bufsize_t tail_len, bufsize_t line_len) {
+  if (parser == NULL || tail_line == NULL || tail_len <= 0) {
+    return;
+  }
+
+  if (starts_with_wiki_block(tail_line, tail_len)) {
+    open_wiki_block_from_fragment(parser, tail_line, tail_len);
+    return;
+  }
+
+  if (is_inline_advanced_text_start(tail_line, tail_len)) {
+    namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
+    if (pre != NULL) {
+      pre->end_line = parser->line_number;
+      pre->end_column = (int)line_len;
+
+      bufsize_t start_idx = skip_spaces(tail_line, tail_len, 0) + 3;
+      if (start_idx < tail_len) {
+        bufsize_t content_len = tail_len - start_idx;
+        int closes = count_token(tail_line + start_idx, content_len, "}}}", 3);
+        if (closes > 0) {
+          bufsize_t trim_end = tail_len;
+          while (trim_end > start_idx && tail_line[trim_end - 1] == ' ') {
+            trim_end--;
+          }
+          while (trim_end >= start_idx + 3 && tail_line[trim_end - 3] == '}' &&
+                 tail_line[trim_end - 2] == '}' && tail_line[trim_end - 1] == '}') {
+            trim_end -= 3;
+          }
+          while (trim_end > start_idx && tail_line[trim_end - 1] == ' ') {
+            trim_end--;
+          }
+          if (trim_end > start_idx) {
+            strbuf_put(&pre->content, tail_line + start_idx, trim_end - start_idx);
+          }
+        } else {
+          strbuf_put(&pre->content, tail_line + start_idx, content_len);
+        }
+
+        parser->advanced_brace_depth = 1;
+        parser->advanced_brace_depth += count_token(tail_line + start_idx, tail_len - start_idx,
+                                                    "{{{", 3);
+        parser->advanced_brace_depth -= count_token(tail_line + start_idx, tail_len - start_idx,
+                                                    "}}}", 3);
+        if (parser->advanced_brace_depth < 0) {
+          parser->advanced_brace_depth = 0;
+        }
+
+        if (parser->advanced_brace_depth > 0) {
+          parser->advanced_text_node = pre;
+        } else {
+          parser->advanced_text_node = NULL;
+        }
+      }
+    }
+    return;
+  }
+
+  append_text_tail_as_block(parser, tail_line, tail_len);
+}
+
+static bufsize_t find_advanced_close_on_line(const unsigned char *line, bufsize_t len,
+                                             int initial_depth) {
+  if (line == NULL || len < 3 || initial_depth <= 0) {
+    return -1;
+  }
+
+  int depth = initial_depth;
+  for (bufsize_t i = 0; i + 2 < len;) {
+    if (line[i] == '{' && line[i + 1] == '{' && line[i + 2] == '{') {
+      depth++;
+      i += 3;
+      continue;
+    }
+    if (line[i] == '}' && line[i + 1] == '}' && line[i + 2] == '}') {
+      depth--;
+      if (depth == 0) {
+        return i;
+      }
+      i += 3;
+      continue;
+    }
+    i++;
+  }
+
+  return -1;
 }
 
 static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigned char *line,
@@ -857,7 +917,10 @@ void process_line(namumark_parser *parser) {
       bufsize_t trailing_end = 0;
       count_wiki_block_trailing_ends(line + content_start, content_end - content_start,
                                      &trailing_end);
-      content_end = content_start + trailing_end;
+      if (skip_spaces(line + content_start, content_end - content_start, 0) <
+          content_end - content_start) {
+        content_end = content_start + trailing_end;
+      }
       counted_trailing = 1;
     }
 
@@ -913,57 +976,7 @@ void process_line(namumark_parser *parser) {
       if (tail < len) {
         const unsigned char *tail_line = line + tail;
         bufsize_t tail_len = len - tail;
-
-        if (starts_with_wiki_block(tail_line, tail_len)) {
-          open_wiki_block_from_fragment(parser, tail_line, tail_len);
-        } else if (is_inline_advanced_text_start(tail_line, tail_len)) {
-          namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
-          if (pre != NULL) {
-            pre->end_line = parser->line_number;
-            pre->end_column = (int)len;
-
-            bufsize_t start_idx = skip_spaces(tail_line, tail_len, 0) + 3;
-            if (start_idx < tail_len) {
-              bufsize_t content_len = tail_len - start_idx;
-              int closes = count_token(tail_line + start_idx, content_len, "}}}", 3);
-              if (closes > 0) {
-                bufsize_t trim_end = tail_len;
-                while (trim_end > start_idx && tail_line[trim_end - 1] == ' ') {
-                  trim_end--;
-                }
-                while (trim_end >= start_idx + 3 && tail_line[trim_end - 3] == '}' &&
-                       tail_line[trim_end - 2] == '}' && tail_line[trim_end - 1] == '}') {
-                  trim_end -= 3;
-                }
-                while (trim_end > start_idx && tail_line[trim_end - 1] == ' ') {
-                  trim_end--;
-                }
-                if (trim_end > start_idx) {
-                  strbuf_put(&pre->content, tail_line + start_idx, trim_end - start_idx);
-                }
-              } else {
-                strbuf_put(&pre->content, tail_line + start_idx, content_len);
-              }
-            }
-
-            parser->advanced_brace_depth = 1;
-            parser->advanced_brace_depth +=
-                count_token(tail_line + start_idx, tail_len - start_idx, "{{{", 3);
-            parser->advanced_brace_depth -=
-                count_token(tail_line + start_idx, tail_len - start_idx, "}}}", 3);
-            if (parser->advanced_brace_depth < 0) {
-              parser->advanced_brace_depth = 0;
-            }
-
-            if (parser->advanced_brace_depth > 0) {
-              parser->advanced_text_node = pre;
-            } else {
-              parser->advanced_text_node = NULL;
-            }
-          }
-        } else {
-          append_text_tail_as_block(parser, tail_line, tail_len);
-        }
+        process_advanced_close_tail(parser, tail_line, tail_len, len);
       }
 
       strbuf_clear(&parser->current_line);
@@ -971,6 +984,35 @@ void process_line(namumark_parser *parser) {
     }
 
     int only_end_line = is_line_only_advanced_end(line, len);
+
+    bufsize_t inline_close = find_advanced_close_on_line(line, len, parser->advanced_brace_depth);
+    if (inline_close >= 0) {
+      if (inline_close > 0 || !(only_end_line && parser->advanced_brace_depth == 1)) {
+        if (parser->advanced_text_node->content.size > 0) {
+          strbuf_putc(&parser->advanced_text_node->content, '\n');
+        }
+        if (inline_close > 0) {
+          strbuf_put(&parser->advanced_text_node->content, line, inline_close);
+        }
+      }
+
+      parser->advanced_text_node->end_line = parser->line_number;
+      parser->advanced_text_node->end_column = (int)len;
+      parser->advanced_brace_depth = 0;
+      parser->advanced_text_node = NULL;
+
+      bufsize_t tail = inline_close + 3;
+      while (tail < len && line[tail] == ' ') {
+        tail++;
+      }
+      if (tail < len) {
+        process_advanced_close_tail(parser, line + tail, len - tail, len);
+      }
+
+      strbuf_clear(&parser->current_line);
+      return;
+    }
+
     if (!(only_end_line && parser->advanced_brace_depth == 1)) {
       if (parser->advanced_text_node->content.size > 0) {
         strbuf_putc(&parser->advanced_text_node->content, '\n');
@@ -1021,14 +1063,15 @@ void process_line(namumark_parser *parser) {
 
   if (parser->table_continuation && parser->root->last_child != NULL &&
       parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
-      !is_table_row_start(line, len)) {
+      !is_table_row_start(line, len) && parser->table_wiki_block_depth > 0) {
     namumark_node *table = parser->root->last_child;
     strbuf_putc(&table->content, '\n');
     strbuf_put(&table->content, line, len);
     table->end_line = parser->line_number;
     table->end_column = (int)len;
 
-    if (line_ends_with_table_sep(line, len)) {
+    update_table_wiki_depth(parser, line, len);
+    if (parser->table_wiki_block_depth <= 0 && line_ends_with_table_sep(line, len)) {
       parser->table_continuation = false;
     }
 
@@ -1199,7 +1242,12 @@ void process_line(namumark_parser *parser) {
   }
 
   if (is_table_row_start(line, len)) {
-    parser->table_continuation = !line_ends_with_table_sep(line, len);
+    if (!parser->table_continuation || parser->table_wiki_block_depth <= 0) {
+      parser->table_wiki_block_depth = 0;
+      parser->table_wiki_nonwiki_depth = 0;
+    }
+    update_table_wiki_depth(parser, line, len);
+    parser->table_continuation = parser->table_wiki_block_depth > 0 || !line_ends_with_table_sep(line, len);
     namumark_node *table = NULL;
     if (parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_TABLE) {
       table = parser->root->last_child;
@@ -1216,6 +1264,8 @@ void process_line(namumark_parser *parser) {
   }
 
   parser->table_continuation = false;
+  parser->table_wiki_block_depth = 0;
+  parser->table_wiki_nonwiki_depth = 0;
 
   namumark_node *text = append_block_text(parser, NAMUMARK_NODE_TEXT, line, len);
   if (text != NULL) {

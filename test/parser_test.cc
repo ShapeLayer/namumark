@@ -468,3 +468,46 @@ TEST(ParserTest, NestedLinkWithFileTargetParsesAsSingleOuterLink) {
   namumark_node_free(doc);
   parser_free(parser);
 }
+
+TEST(ParserTest, AdvancedPreformattedClosesMidLineAndRendersFollowingText) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{||<width=50%><nopad> [[파일:example.png|width=100%]] ||<width=50%><nopad> [[파일:example.png|width=100%]] ||\n"
+      "|| 설명 1 || 설명 2 ||}}}위의 방식보다는 아래 방식이 권장됩니다.\n"
+      "{{{||<nopad> [[파일:example.png|width=100%]] ||<nopad> [[파일:example.png|width=100%]] ||\n"
+      "||<width=50%> 설명 1 ||<width=50%> 설명 2 ||}}}[각주]\n"
+      "== 동영상 ==\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+
+  const namumark_node *first_pre = doc->first_child;
+  ASSERT_EQ(first_pre->type, NAMUMARK_NODE_PREFORMATTED);
+
+  const namumark_node *after_first = first_pre->next;
+  ASSERT_NE(after_first, nullptr);
+  ASSERT_EQ(after_first->type, NAMUMARK_NODE_TEXT);
+  EXPECT_NE(std::string(reinterpret_cast<const char *>(after_first->content.ptr)).find("위의 방식보다는 아래 방식"),
+            std::string::npos);
+
+  const namumark_node *second_pre = after_first->next;
+  ASSERT_NE(second_pre, nullptr);
+  ASSERT_EQ(second_pre->type, NAMUMARK_NODE_PREFORMATTED);
+
+  const namumark_node *after_second = second_pre->next;
+  ASSERT_NE(after_second, nullptr);
+  ASSERT_EQ(after_second->type, NAMUMARK_NODE_TEXT);
+  EXPECT_STREQ(reinterpret_cast<const char *>(after_second->content.ptr), "[각주]");
+
+  const namumark_node *heading = after_second->next;
+  ASSERT_NE(heading, nullptr);
+  ASSERT_EQ(heading->type, NAMUMARK_NODE_HEADING);
+  EXPECT_STREQ(reinterpret_cast<const char *>(heading->content.ptr), "동영상");
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
