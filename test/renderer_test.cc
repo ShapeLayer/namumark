@@ -471,7 +471,8 @@ TEST(RendererTest, InlineDisplayWikiAdvancedRendersAsSpan) {
 
   EXPECT_NE(html.find("<span class=\"nm-wiki-block\" style=\"display: inline; color: #0275d8; font-size: .8em\">"),
             std::string::npos);
-  EXPECT_NE(html.find("<span class=\"nm-macro\" data-name=\"1\">1</span>"), std::string::npos);
+  EXPECT_NE(html.find(">[1]</span>"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"1\">"), std::string::npos);
   EXPECT_EQ(html.find("<div class=\"nm-wiki-block\" style=\"display: inline"), std::string::npos);
   EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
 
@@ -842,12 +843,49 @@ TEST(RendererTest, TableCellAdjacentStyleAndWikiBlocksRenderOnclickToggles) {
   free(buf);
 
   EXPECT_NE(html.find("<style>.hide {display: none;} </style>"), std::string::npos);
-  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold\" data-onclick=\"toggle-class,fold,hide\"><span class=\"nm-macro\" data-name=\"펼치기\">펼치기</span></div>"), std::string::npos);
-  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold hide\" data-onclick=\"toggle-class,fold,hide\"><span class=\"nm-macro\" data-name=\"접기\">접기</span></div>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold\" data-onclick=\"toggle-class,fold,hide\">[펼치기]</div>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold hide\" data-onclick=\"toggle-class,fold,hide\">[접기]</div>"), std::string::npos);
   EXPECT_NE(html.find("<div class=\"nm-wiki-block fold hide\">내용</div>"), std::string::npos);
-  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold2 hide\" data-onclick=\"toggle-class,fold2,hide\"><span class=\"nm-macro\" data-name=\"v\">v</span> <del>체크박스</del></div>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold2 hide\" data-onclick=\"toggle-class,fold2,hide\">[v] <del>체크박스</del></div>"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"v\">"), std::string::npos);
   EXPECT_EQ(html.find("{{{#!style<br"), std::string::npos);
   EXPECT_EQ(html.find("{{{#!wiki class=&quot;fold"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, UnknownBracketMacrosRenderAsLiteralText) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "[v] [x] [1] [A] 체크 표시\n"
+      "{{{#!wiki class=\"fold2 hide\" onclick=\"toggle-class,fold2,hide\"\n"
+      "[v] --체크박스--}}}\n"
+      "[br]known breakline\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<p>[v] [x] [1] [A] 체크 표시</p>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block fold2 hide\" data-onclick=\"toggle-class,fold2,hide\">[v] <del>체크박스</del></div>"), std::string::npos);
+  EXPECT_NE(html.find("<br />known breakline"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"v\">"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"x\">"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"1\">"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"A\">"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);

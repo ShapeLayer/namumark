@@ -1097,6 +1097,13 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
         return fputs("<a id=\"", out) >= 0 && print_html_escaped(out, &node->args) &&
                fputs("\"></a>", out) >= 0;
       }
+      if (node->macro_type == NAMUMARK_NODE_MACRO_NONE) {
+        if (fputc('[', out) == EOF || !print_html_escaped(out, &node->content) ||
+            fputc(']', out) == EOF) {
+          return 0;
+        }
+        return 1;
+      }
       if (fputs("<span class=\"nm-macro\" data-name=\"", out) < 0 ||
           !print_html_escaped(out, &node->target) || fputs("\">", out) < 0 ||
           !print_html_escaped(out, &node->content) || fputs("</span>", out) < 0) {
