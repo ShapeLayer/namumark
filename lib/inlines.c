@@ -305,6 +305,62 @@ static void parse_last_child_inlines(namumark_node *parent, int line_number) {
   parse_inlines(&node->content, node, line_number);
 }
 
+static void unescape_link_text(strbuf *out, const unsigned char *text, bufsize_t len) {
+  strbuf_clear(out);
+  for (bufsize_t i = 0; i < len; i++) {
+    if (text[i] == '\\' && i + 1 < len) {
+      if (text[i + 1] == '\\') {
+        strbuf_putc(out, '\\');
+        i++;
+      } else {
+        strbuf_putc(out, text[i + 1]);
+        i++;
+      }
+    } else {
+      strbuf_putc(out, text[i]);
+    }
+  }
+}
+
+static void normalize_link_target(strbuf *target, strbuf *display) {
+  if (target == NULL || target->size == 0) {
+    return;
+  }
+
+  strbuf normalized;
+  strbuf_init(&normalized, target->size + 1);
+  unescape_link_text(&normalized, target->ptr, target->size);
+
+  if (normalized.size >= 7 && memcmp(normalized.ptr, "문서:", 7) == 0) {
+    strbuf_drop(&normalized, 7);
+  }
+
+  int stripped_trailing_hash = 0;
+  if (normalized.size >= 2 && normalized.ptr[normalized.size - 1] == '#' &&
+      normalized.ptr[normalized.size - 2] != '#') {
+    strbuf_truncate(&normalized, normalized.size - 1);
+    stripped_trailing_hash = 1;
+  } else if (normalized.size >= 2 && normalized.ptr[normalized.size - 1] == '#' &&
+             normalized.ptr[normalized.size - 2] == '#') {
+    strbuf_truncate(&normalized, normalized.size - 1);
+  }
+
+  if (display != NULL && display->size == 0) {
+    strbuf_set(display, normalized.ptr, normalized.size);
+    if (!stripped_trailing_hash && display->size > 3) {
+      for (bufsize_t i = 1; i + 2 < display->size; i++) {
+        if (display->ptr[i] == '#' && display->ptr[i + 1] == 's' && display->ptr[i + 2] == '-') {
+          strbuf_truncate(display, i);
+          break;
+        }
+      }
+    }
+  }
+
+  strbuf_set(target, normalized.ptr, normalized.size);
+  strbuf_free(&normalized);
+}
+
 static void parse_link_target(namumark_node *node) {
   if (node == NULL || node->content.size <= 0) {
     return;
@@ -316,9 +372,11 @@ static void parse_link_target(namumark_node *node) {
   } else {
     strbuf_set(&node->target, node->content.ptr, sep);
     if (sep + 1 < node->content.size) {
-      strbuf_set(&node->args, node->content.ptr + sep + 1, node->content.size - sep - 1);
+      unescape_link_text(&node->args, node->content.ptr + sep + 1, node->content.size - sep - 1);
     }
   }
+
+  normalize_link_target(&node->target, &node->args);
 
   if (node->target.size > 0) {
     if (node->target.ptr[0] == '#') {
@@ -378,6 +436,8 @@ static void parse_macro_content(namumark_node *node) {
     node->macro_type = NAMUMARK_NODE_MACRO_PAGECOUNT;
   } else if (node->target.size == 4 && memcmp(node->target.ptr, "ruby", 4) == 0) {
     node->macro_type = NAMUMARK_NODE_MACRO_RUBY;
+  } else if (node->target.size == 7 && memcmp(node->target.ptr, "youtube", 7) == 0) {
+    node->macro_type = NAMUMARK_NODE_MACRO_YOUTUBE;
   }
 }
 

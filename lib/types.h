@@ -70,6 +70,7 @@ typedef enum {
   NAMUMARK_NODE_MACRO_CLEARFIX,
   NAMUMARK_NODE_MACRO_PAGECOUNT,
   NAMUMARK_NODE_MACRO_RUBY,
+  NAMUMARK_NODE_MACRO_YOUTUBE,
 } namumark_node_macro_type;
 
 typedef enum {

@@ -517,6 +517,63 @@ TEST(ParserTest, BlankLineSplitsAdjacentTables) {
   parser_free(parser);
 }
 
+TEST(ParserTest, CaptionLineStartsTable) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input = "|캡션| 테이블 || 내용 ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_EQ(doc->first_child->type, NAMUMARK_NODE_TABLE);
+  EXPECT_EQ(doc->first_child->next, nullptr);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(ParserTest, SimilarSinglePipeTextDoesNotStartTable) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input = "|그냥 텍스트|\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_EQ(doc->first_child->type, NAMUMARK_NODE_TEXT);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(ParserTest, CommentOnlyLineDoesNotSplitTable) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "|| A || B ||\n"
+      "## hidden comment\n"
+      "|| C || D ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_EQ(doc->first_child->type, NAMUMARK_NODE_TABLE);
+  EXPECT_EQ(doc->first_child->next, nullptr);
+  std::string content(reinterpret_cast<const char *>(doc->first_child->content.ptr), doc->first_child->content.size);
+  EXPECT_NE(content.find("|| A || B ||"), std::string::npos);
+  EXPECT_NE(content.find("|| C || D ||"), std::string::npos);
+  EXPECT_EQ(content.find("hidden comment"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(ParserTest, NestedLinkWithFileTargetParsesAsSingleOuterLink) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

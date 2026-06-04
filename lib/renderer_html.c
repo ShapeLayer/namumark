@@ -352,17 +352,22 @@ static int is_rendered_list_sequence_node(const namumark_node *node) {
 static int is_footnote_macro_only_text(const namumark_node *node) {
   return node != NULL && node->type == NAMUMARK_NODE_TEXT && node->first_child != NULL &&
          node->first_child == node->last_child && node->first_child->type == NAMUMARK_NODE_MACRO &&
-         node->first_child->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE;
+          node->first_child->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE;
 }
 
-static int text_contains_footnote_macro(const namumark_node *node) {
+static int is_block_macro(const namumark_node *node) {
+  return node != NULL && node->type == NAMUMARK_NODE_MACRO &&
+         (node->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE ||
+          node->macro_type == NAMUMARK_NODE_MACRO_CLEARFIX);
+}
+
+static int text_contains_block_macro(const namumark_node *node) {
   if (node == NULL || node->type != NAMUMARK_NODE_TEXT) {
     return 0;
   }
   const namumark_node *child = node->first_child;
   while (child != NULL) {
-    if (child->type == NAMUMARK_NODE_MACRO &&
-        child->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE) {
+    if (is_block_macro(child)) {
       return 1;
     }
     child = child->next;
@@ -370,13 +375,12 @@ static int text_contains_footnote_macro(const namumark_node *node) {
   return 0;
 }
 
-static int render_text_with_block_footnote_macro(FILE *out, const namumark_node *node) {
+static int render_text_with_block_macro(FILE *out, const namumark_node *node) {
   const namumark_node *child = node->first_child;
   int paragraph_open = 0;
 
   while (child != NULL) {
-    if (child->type == NAMUMARK_NODE_MACRO &&
-        child->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE) {
+    if (is_block_macro(child)) {
       if (paragraph_open) {
         if (fputs("</p>\n", out) < 0) {
           return 0;
@@ -458,6 +462,53 @@ static int render_inline_wrapped(FILE *out, const char *open, const char *close,
   return 1;
 }
 
+static int render_text_with_line_breaks(FILE *out, const strbuf *content) {
+  if (content == NULL) {
+    return 1;
+  }
+
+  bufsize_t start = 0;
+  for (bufsize_t i = 0; i < content->size; i++) {
+    if (content->ptr[i] == '\n') {
+      if (i > start && !print_html_escaped_bytes(out, content->ptr + start, i - start)) {
+        return 0;
+      }
+      if (fputs("<br />", out) < 0) {
+        return 0;
+      }
+      start = i + 1;
+    }
+  }
+
+  if (start < content->size &&
+      !print_html_escaped_bytes(out, content->ptr + start, content->size - start)) {
+    return 0;
+  }
+  return 1;
+}
+
+static int render_inline_node_with_line_breaks(FILE *out, const namumark_node *node) {
+  if (node->type == NAMUMARK_NODE_TEXT) {
+    return render_text_with_line_breaks(out, &node->content);
+  }
+  return render_inline_node(out, node);
+}
+
+static int render_inline_children_with_line_breaks(FILE *out, const namumark_node *parent) {
+  if (parent->first_child == NULL) {
+    return render_text_with_line_breaks(out, &parent->content);
+  }
+
+  const namumark_node *child = parent->first_child;
+  while (child != NULL) {
+    if (!render_inline_node_with_line_breaks(out, child)) {
+      return 0;
+    }
+    child = child->next;
+  }
+  return 1;
+}
+
 static int render_advanced_content(FILE *out, const strbuf *content) {
   if (content == NULL) {
     return 1;
@@ -468,7 +519,7 @@ static int render_advanced_content(FILE *out, const strbuf *content) {
   strbuf_set(&fake_parent.content, content->ptr, content->size);
   parse_inlines(content, &fake_parent, 0);
 
-  int ok = render_inline_children(out, &fake_parent);
+  int ok = render_inline_children_with_line_breaks(out, &fake_parent);
 
   strbuf_free(&fake_parent.content);
   namumark_node *child = fake_parent.first_child;
@@ -560,6 +611,95 @@ static int render_file_link(FILE *out, const namumark_node *node) {
   }
 
   return fputs(" />", out) >= 0;
+}
+
+static int render_ruby_macro(FILE *out, const namumark_node *node) {
+  strbuf base;
+  strbuf ruby;
+  strbuf color;
+  strbuf_init(&base, 32);
+  strbuf_init(&ruby, 32);
+  strbuf_init(&color, 16);
+
+  bufsize_t pos = 0;
+  int first = 1;
+  while (pos <= node->args.size) {
+    bufsize_t part_start = pos;
+    while (pos < node->args.size && node->args.ptr[pos] != ',') {
+      pos++;
+    }
+    bufsize_t part_end = pos;
+    while (part_start < part_end && node->args.ptr[part_start] == ' ') {
+      part_start++;
+    }
+    while (part_end > part_start && node->args.ptr[part_end - 1] == ' ') {
+      part_end--;
+    }
+
+    if (part_end > part_start) {
+      const unsigned char *eq = memchr(node->args.ptr + part_start, '=', (size_t)(part_end - part_start));
+      if (eq == NULL && first) {
+        strbuf_set(&base, node->args.ptr + part_start, part_end - part_start);
+      } else if (eq != NULL) {
+        bufsize_t key_len = (bufsize_t)(eq - (node->args.ptr + part_start));
+        const unsigned char *value = eq + 1;
+        bufsize_t value_len = part_end - (bufsize_t)(value - node->args.ptr);
+        if (key_len == 4 && memcmp(node->args.ptr + part_start, "ruby", 4) == 0) {
+          strbuf_set(&ruby, value, value_len);
+        } else if (key_len == 5 && memcmp(node->args.ptr + part_start, "color", 5) == 0) {
+          strbuf_set(&color, value, value_len);
+        }
+      }
+    }
+
+    first = 0;
+    if (pos >= node->args.size) {
+      break;
+    }
+    pos++;
+  }
+
+  int ok = 1;
+  if (fputs("<ruby>", out) < 0 || !print_html_escaped(out, &base) ||
+      fputs("<rp>(</rp><rt>", out) < 0) {
+    ok = 0;
+  }
+  if (ok && color.size > 0) {
+    if (fputs("<span style=\"color:", out) < 0 || !print_html_escaped(out, &color) ||
+        fputs(";\">", out) < 0 || !print_html_escaped(out, &ruby) ||
+        fputs("</span>", out) < 0) {
+      ok = 0;
+    }
+  } else if (ok && !print_html_escaped(out, &ruby)) {
+    ok = 0;
+  }
+  if (ok && fputs("</rt><rp>)</rp></ruby>", out) < 0) {
+    ok = 0;
+  }
+
+  strbuf_free(&base);
+  strbuf_free(&ruby);
+  strbuf_free(&color);
+  return ok;
+}
+
+static int render_youtube_macro(FILE *out, const namumark_node *node) {
+  bufsize_t start = 0;
+  bufsize_t end = node->args.size;
+  while (start < end && (node->args.ptr[start] == ' ' || node->args.ptr[start] == '\t')) {
+    start++;
+  }
+  while (end > start && (node->args.ptr[end - 1] == ' ' || node->args.ptr[end - 1] == '\t')) {
+    end--;
+  }
+
+  if (fputs("<iframe allowfullscreen=\"\" width=\"640\" height=\"360\" frameborder=\"0\" src=\"//www.youtube.com/embed/", out) < 0) {
+    return 0;
+  }
+  if (end > start && !print_html_escaped_bytes(out, node->args.ptr + start, end - start)) {
+    return 0;
+  }
+  return fputs("\" loading=\"lazy\"></iframe>", out) >= 0;
 }
 
 static int render_raw_bytes(FILE *out, const unsigned char *data, bufsize_t len) {
@@ -823,6 +963,37 @@ static int render_style_advanced_block(FILE *out, const namumark_node *node) {
   return fputs("</style>", out) >= 0;
 }
 
+static int render_wrapped_literal_body(FILE *out, const strbuf *body) {
+  if (body == NULL || body->size < 6 || memcmp(body->ptr, "{{{", 3) != 0) {
+    return 0;
+  }
+
+  bufsize_t end = body->size;
+  while (end > 3 && (body->ptr[end - 1] == '\n' || body->ptr[end - 1] == '\r' ||
+                     body->ptr[end - 1] == ' ')) {
+    end--;
+  }
+  if (end < 6 || memcmp(body->ptr + end - 3, "}}}", 3) != 0) {
+    return 0;
+  }
+  if (body->size > 4 && body->ptr[3] == '#' && body->ptr[4] == '!') {
+    return 0;
+  }
+  if (body->ptr[3] == '+' || body->ptr[3] == '-') {
+    return 0;
+  }
+  if (body->size > 4 && body->ptr[3] == '#' && body->ptr[4] != '#') {
+    return 0;
+  }
+
+  if (fputs("<pre><code>", out) < 0 ||
+      !render_html_entity_or_text(out, body->ptr + 3, end - 6) ||
+      fputs("</code></pre>", out) < 0) {
+    return 0;
+  }
+  return 1;
+}
+
 static bufsize_t find_token_in_range(const unsigned char *text, bufsize_t start,
                                      bufsize_t end, const char *token,
                                      bufsize_t token_len);
@@ -971,7 +1142,13 @@ static int render_wiki_advanced_block(FILE *out, const namumark_node *node) {
   }
 
   if (inline_mode || !wiki_body_needs_block_rendering(&body)) {
-    int ok = render_advanced_content(out, &body);
+    int ok = 0;
+    if (body.size >= 6 && memcmp(body.ptr, "{{{", 3) == 0) {
+      ok = render_wrapped_literal_body(out, &body);
+    }
+    if (!ok) {
+      ok = render_advanced_content(out, &body);
+    }
     strbuf_free(&body);
     if (!ok) {
       return 0;
@@ -1093,6 +1270,15 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
       if (node->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE) {
         return render_footnote_list(out);
       }
+      if (node->macro_type == NAMUMARK_NODE_MACRO_CLEARFIX) {
+        return fputs("<div class=\"nm-clearfix\"></div>", out) >= 0;
+      }
+      if (node->macro_type == NAMUMARK_NODE_MACRO_RUBY) {
+        return render_ruby_macro(out, node);
+      }
+      if (node->macro_type == NAMUMARK_NODE_MACRO_YOUTUBE) {
+        return render_youtube_macro(out, node);
+      }
       if (node->target.size == 6 && memcmp(node->target.ptr, "anchor", 6) == 0) {
         return fputs("<a id=\"", out) >= 0 && print_html_escaped(out, &node->args) &&
                fputs("\"></a>", out) >= 0;
@@ -1194,7 +1380,13 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
             return 0;
           }
 
-          if (!render_advanced_content(out, &body) || fputs("</span>", out) < 0) {
+          int body_ok = 0;
+          if (body.size >= 2 && body.ptr[0] == '#' && body.ptr[1] == '#') {
+            body_ok = print_html_escaped(out, &body);
+          } else {
+            body_ok = render_advanced_content(out, &body);
+          }
+          if (!body_ok || fputs("</span>", out) < 0) {
             strbuf_free(&light_color);
             strbuf_free(&dark_color);
             strbuf_free(&head);
@@ -1236,6 +1428,44 @@ static int is_row_start_line(const unsigned char *line, bufsize_t len) {
     s++;
   }
   return (s + 1 < len && line[s] == '|' && line[s + 1] == '|');
+}
+
+static int parse_caption_line(const unsigned char *line, bufsize_t len, strbuf *caption,
+                              strbuf *row) {
+  bufsize_t s = 0;
+  while (s < len && line[s] == ' ') {
+    s++;
+  }
+  if (s + 2 >= len || line[s] != '|' || line[s + 1] == '|') {
+    return 0;
+  }
+
+  bufsize_t cap_end = s + 1;
+  while (cap_end < len && line[cap_end] != '|') {
+    cap_end++;
+  }
+  if (cap_end >= len || cap_end + 2 >= len || line[cap_end + 1] != ' ' ||
+      line[cap_end + 2] == '|') {
+    return 0;
+  }
+
+  strbuf_clear(caption);
+  strbuf_clear(row);
+  strbuf_put(caption, line + s + 1, cap_end - (s + 1));
+  strbuf_puts(row, "||");
+  strbuf_put(row, line + cap_end + 1, len - (cap_end + 1));
+  return 1;
+}
+
+static int is_table_line_start_for_render(const unsigned char *line, bufsize_t len) {
+  strbuf caption;
+  strbuf row;
+  strbuf_init(&caption, 16);
+  strbuf_init(&row, len + 2);
+  int ok = is_row_start_line(line, len) || parse_caption_line(line, len, &caption, &row);
+  strbuf_free(&caption);
+  strbuf_free(&row);
+  return ok;
 }
 
 typedef struct table_render_style {
@@ -1882,6 +2112,15 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     return 1;
   }
 
+  strbuf wrapped_literal;
+  strbuf_init(&wrapped_literal, len + 1);
+  strbuf_set(&wrapped_literal, text, len);
+  int wrapped_ok = render_wrapped_literal_body(out, &wrapped_literal);
+  strbuf_free(&wrapped_literal);
+  if (wrapped_ok) {
+    return 1;
+  }
+
   int has_newline = 0;
   for (bufsize_t i = 0; i < len; i++) {
     if (text[i] == '\n') {
@@ -2008,6 +2247,14 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
         first_plain = 0;
       }
 
+      if (line_end >= len) {
+        break;
+      }
+      line_start = line_end + 1;
+      continue;
+    }
+
+    if (line_start + 1 < e && text[line_start] == '#' && text[line_start + 1] == '#') {
       if (line_end >= len) {
         break;
       }
@@ -2337,13 +2584,13 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
           strbuf_free(&wiki_advanced);
           return 0;
         }
-      } else if (e > s) {
+      } else if (e > line_start) {
         if (!first_plain && fputs("<br />", out) < 0) {
           strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
-        if (!render_inline_snippet(out, text + s, e - s)) {
+        if (!render_inline_snippet(out, text + line_start, e - line_start)) {
           strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
@@ -2973,7 +3220,7 @@ static int render_block_node(FILE *out, const namumark_node *node) {
           if (probe_end > probe_start) {
             const unsigned char *line_ptr = tablebuf.ptr + probe_start;
             bufsize_t line_len = probe_end - probe_start;
-            if (is_row_start_line(line_ptr, line_len)) {
+            if (is_table_line_start_for_render(line_ptr, line_len)) {
               collect_table_style_from_row(line_ptr, line_len, &table_style);
               break;
             }
@@ -3068,6 +3315,7 @@ static int render_block_node(FILE *out, const namumark_node *node) {
 
       int tbody_open = 0;
       int thead_open = 0;
+      int caption_rendered = 0;
 
       while (line_start <= tablebuf.size) {
         bufsize_t line_end = strbuf_strchr(&tablebuf, '\n', line_start);
@@ -3079,7 +3327,7 @@ static int render_block_node(FILE *out, const namumark_node *node) {
           const unsigned char *line_ptr = tablebuf.ptr + line_start;
           bufsize_t line_len = line_end - line_start;
 
-          if (is_row_start_line(line_ptr, line_len)) {
+          if (is_table_line_start_for_render(line_ptr, line_len)) {
             if (pending_row.size > 0 && table_row_ends_with_separator(&pending_row)) {
               if (!thead_open && !tbody_open && !table_row_is_thead(&pending_row)) {
                 if (fputs("<tbody>\n", out) < 0) {
@@ -3104,7 +3352,28 @@ static int render_block_node(FILE *out, const namumark_node *node) {
               strbuf_putc(&pending_row, '\n');
               strbuf_put(&pending_row, line_ptr, line_len);
             } else {
-              strbuf_set(&pending_row, line_ptr, line_len);
+              strbuf caption;
+              strbuf caption_row;
+              strbuf_init(&caption, 32);
+              strbuf_init(&caption_row, line_len + 4);
+              if (!caption_rendered && parse_caption_line(line_ptr, line_len, &caption, &caption_row)) {
+                if (fputs("<caption>", out) < 0 ||
+                    !render_table_cell_content(out, caption.ptr, caption.size) ||
+                    fputs("</caption>", out) < 0) {
+                  strbuf_free(&caption);
+                  strbuf_free(&caption_row);
+                  strbuf_free(&pending_row);
+                  strbuf_free(&tablebuf);
+                  table_context_free(&table_style);
+                  return 0;
+                }
+                strbuf_set(&pending_row, caption_row.ptr, caption_row.size);
+                caption_rendered = 1;
+              } else {
+                strbuf_set(&pending_row, line_ptr, line_len);
+              }
+              strbuf_free(&caption);
+              strbuf_free(&caption_row);
             }
           } else if (pending_row.size > 0) {
             strbuf_putc(&pending_row, '\n');
@@ -3174,14 +3443,18 @@ static int render_block_node(FILE *out, const namumark_node *node) {
       const char *tag = wiki_render_tag(node, 0);
 
       if (!wiki_body_needs_block_rendering(&wikibuf)) {
-        if (!render_wiki_block_open(out, tag, node)) {
-          strbuf_free(&wikibuf);
-          return 0;
-        }
-        if (!render_advanced_content(out, &wikibuf)) {
-          strbuf_free(&wikibuf);
-          return 0;
-        }
+      if (!render_wiki_block_open(out, tag, node)) {
+        strbuf_free(&wikibuf);
+        return 0;
+      }
+      int ok = 0;
+      if (wikibuf.size >= 6 && memcmp(wikibuf.ptr, "{{{", 3) == 0) {
+        ok = render_wrapped_literal_body(out, &wikibuf);
+      }
+      if (!ok && !render_advanced_content(out, &wikibuf)) {
+        strbuf_free(&wikibuf);
+        return 0;
+      }
         strbuf_free(&wikibuf);
         if (fprintf(out, "</%s>", tag) < 0) {
           return 0;
@@ -3256,8 +3529,8 @@ static int render_block_node(FILE *out, const namumark_node *node) {
       if (is_footnote_macro_only_text(node) || is_style_advanced_only_text(node)) {
         return render_inline_children(out, node);
       }
-      if (text_contains_footnote_macro(node)) {
-        return render_text_with_block_footnote_macro(out, node);
+      if (text_contains_block_macro(node)) {
+        return render_text_with_block_macro(out, node);
       }
       if (fputs("<p>", out) < 0 || !render_inline_children(out, node) || fputs("</p>\n", out) < 0) {
         return 0;

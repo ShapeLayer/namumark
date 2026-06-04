@@ -616,6 +616,42 @@ TEST(RendererTest, InlineBlockWikiLiteralBodiesRenderInlineCode) {
   parser_free(parser);
 }
 
+TEST(RendererTest, OuterWikiPreservesNewlineBeforeNestedInlineBlockWiki) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki style=\"\"\n"
+      "예시\n"
+      "{{{#!wiki style=\"display: inline-block; width: 45%; padding: 5px 10px; margin: 3px; border: 2px solid gray; border-radius: 10px\"\n"
+      "{{{border-radius:10px}}}:[br]모든 방향 10px}}}{{{#!wiki style=\"display: inline-block; width: 45%; padding: 5px 10px; margin: 3px; border: 2px solid gray; border-radius: 10px 20px\"\n"
+      "{{{border-radius:10px 20px}}}:[br]좌상, 우하는 10px}}}\n"
+      "}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\">예시<br /><div class=\"nm-wiki-block\" style=\"display: inline-block;"), std::string::npos);
+  EXPECT_NE(html.find("<code>border-radius:10px</code>:<br />모든 방향 10px"), std::string::npos);
+  EXPECT_NE(html.find("<code>border-radius:10px 20px</code>:<br />좌상, 우하는 10px"), std::string::npos);
+  EXPECT_EQ(html.find("예시\n<div"), std::string::npos);
+  EXPECT_EQ(html.find("예시<div"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, TableCellsRenderMultilineLiteralAndNestedWikiTables) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -891,6 +927,73 @@ TEST(RendererTest, UnknownBracketMacrosRenderAsLiteralText) {
   parser_free(parser);
 }
 
+TEST(RendererTest, RubyMacroRendersRubyElement) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "[[루비 문자]]([[후리가나]])를 입력합니다.\n"
+      "\n"
+      "예시\n"
+      "|| {{{ [ruby(글자,ruby=루비,color=red)] }}} ||\n"
+      "|| [ruby(글자,ruby=루비,color=red)] ||\n"
+      "[ruby(漢字,ruby=かんじ)]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<a href=\"루비 문자\">루비 문자</a>(<a href=\"후리가나\">후리가나</a>)를 입력합니다."), std::string::npos);
+  EXPECT_NE(html.find("<pre><code> [ruby(글자,ruby=루비,color=red)] </code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<ruby>글자<rp>(</rp><rt><span style=\"color:red;\">루비</span></rt><rp>)</rp></ruby>"), std::string::npos);
+  EXPECT_NE(html.find("<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"ruby\">"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, YoutubeMacroRendersIframeInWikiTableCell) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<table align=center><table width=500><table bordercolor=red><table bgcolor=yellow> {{{#!wiki style=\"margin: -5px -10px\"\n"
+      "[youtube(jNQXAC9IVRw)]}}} ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<table class=\"nm-table\" style=\"background-color:yellow;border:2px solid red;\">"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"margin: -5px -10px\"><iframe allowfullscreen=\"\" width=\"640\" height=\"360\" frameborder=\"0\" src=\"//www.youtube.com/embed/jNQXAC9IVRw\" loading=\"lazy\"></iframe></div>"), std::string::npos);
+  EXPECT_EQ(html.find("data-name=\"youtube\""), std::string::npos);
+  EXPECT_EQ(html.find("[youtube(jNQXAC9IVRw)]"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, StyleAdvancedAndWikiAttributesRender) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -1111,6 +1214,55 @@ TEST(RendererTest, NestedFileLinkLabelRendersWithoutBrokenAnchor) {
   parser_free(parser);
 }
 
+TEST(RendererTest, EscapedLinkTargetsNormalizeHashBracketsAndBackslashes) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "|| [[\\\\]] ||\n"
+      "|| [[##]] ||\n"
+      "|| [[[12:00]#]] ||\n"
+      "|| [[[\\X\\]]] ||\n"
+      "|| [[\\#1 to Infinity]] ||\n"
+      "|| [[#1 to Infinity#s-2]] ||\n"
+      "|| [[S\\#ARP]] ||\n"
+      "|| [[S#ARP#]] ||\n"
+      "|| [[\\#fanPD Studio]] ||\n"
+      "|| [[문서:/// (너 먹구름 비)|/// (너 먹구름 비)]] ||\n"
+      "|| [[파일:\\#1f1e33.jpg|width=100]] ||\n"
+      "|| [[파일:#1f1e33.jpg#|width=100]] ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<a href=\"\\\">\\</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"#\">#</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"[12:00]\">[12:00]</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"[X]\">[X]</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"#1 to Infinity\">#1 to Infinity</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"#1 to Infinity#s-2\">#1 to Infinity</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"S#ARP\">S#ARP</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"#fanPD Studio\">#fanPD Studio</a>"), std::string::npos);
+  EXPECT_NE(html.find("<a href=\"/// (너 먹구름 비)\">/// (너 먹구름 비)</a>"), std::string::npos);
+  EXPECT_NE(html.find("<img src=\"파일:#1f1e33.jpg\" alt=\"#1f1e33.jpg\" style=\"width:100px\" />"), std::string::npos);
+  EXPECT_EQ(html.find("\\#1 to Infinity"), std::string::npos);
+  EXPECT_EQ(html.find("S\\#ARP"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, MobileImageSectionPreBlocksDoNotLeakClosersOrSwallowHeading) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -1260,6 +1412,41 @@ TEST(RendererTest, TableRowDoesNotAddTrailingEmptyCell) {
   parser_free(parser);
 }
 
+TEST(RendererTest, TableCaptionRendersCaptionElement) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{|캡션| 테이블 || 내용 ||\n"
+      "}}}\n"
+      "\n"
+      "|캡션| 테이블 || 내용 ||\n"
+      "|not a table|\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>|캡션| 테이블 || 내용 ||</code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<table class=\"nm-table\" style=\"\"><caption>캡션</caption><tbody>"), std::string::npos);
+  EXPECT_NE(html.find("<td style=\"\"><div>테이블</div></td><td style=\"\"><div>내용</div></td>"), std::string::npos);
+  EXPECT_NE(html.find("<p>|not a table|</p>"), std::string::npos);
+  EXPECT_EQ(html.find("<td style=\"\"><div>캡션</div></td>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, BlankLineSplitsAdjacentTables) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -1294,6 +1481,137 @@ TEST(RendererTest, BlankLineSplitsAdjacentTables) {
   EXPECT_NE(html.find("<code>|| Out of the frying pan into the fire. || Saying is one thing. ||</code>"), std::string::npos);
   EXPECT_NE(html.find("<td style=\"\"><div>Out of the frying pan into the fire.</div></td><td style=\"\"><div>Saying is one thing.</div></td>"), std::string::npos);
   EXPECT_NE(html.find("<hr />"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, CommentLinesDoNotSplitTablesButArePreservedInLiteralExamples) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<table bordercolor=gray><width=300px><rowbgcolor=#fc6><rowcolor=#000> 입력 ||<width=300px> 출력 ||\n"
+      "||{{{#!wiki style=\"margin: -20px -10px\"\n"
+      "{{{## 내용\n"
+      "}}}}}}|| ||\n"
+      "## 내용\n"
+      "||{{{#!wiki style=\"margin: -20px -10px\"\n"
+      "{{{## 주석입니다.\n"
+      "가나다라\n"
+      "## 주석은 페이지에 출력되지 않습니다.\n"
+      "마바사아\n"
+      "## 토론에서도 주석이 적용됩니다.\n"
+      "자차카타}}}}}}\n"
+      "||가나다라\n"
+      "## 주석은 페이지에 출력되지 않습니다.\n"
+      "마바사아\n"
+      "## 토론에서도 주석이 적용됩니다.\n"
+      "자차카타 ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  size_t first_table = html.find("<table class=\"nm-table\"");
+  ASSERT_NE(first_table, std::string::npos);
+  EXPECT_EQ(html.find("<table class=\"nm-table\"", first_table + 1), std::string::npos);
+  EXPECT_NE(html.find("<pre><code>## 내용\n</code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<pre><code>## 주석입니다.\n가나다라\n## 주석은 페이지에 출력되지 않습니다.\n마바사아\n## 토론에서도 주석이 적용됩니다.\n자차카타</code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<div>가나다라<br />마바사아<br />자차카타</div>"), std::string::npos);
+  EXPECT_EQ(html.find("<p><!-- 내용-->"), std::string::npos);
+  EXPECT_EQ(html.find("<!-- 주석은 페이지에 출력되지 않습니다."), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, TableCellCommentLiteralBlocksRenderAsPreCode) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<table bordercolor=gray><width=300px><colbgcolor=#fc6><colcolor=#000><-4> 활용 예시 ||\n"
+      "|| 입력 ||{{{## 🔶🔶🔶 ㄱ 국적은 오보임\n"
+      "... A는 ㄴ 국적의 선수다. }}}||{{{## 🔶🔶🔶 \n"
+      "## ㄱ 국적은 오보임\n"
+      "## 🔶🔶🔶 \n"
+      "... A는 ㄴ 국적의 선수다. }}}||{{{##\n"
+      "## 🔶🔶🔶 ㄱ 국적은 오보임\n"
+      "##\n"
+      "... A는 ㄴ 국적의 선수다. }}}||\n"
+      "|| 출력 ||<-3>... A는 ㄴ 국적의 선수다. ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>## 🔶🔶🔶 ㄱ 국적은 오보임\n... A는 ㄴ 국적의 선수다. </code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<pre><code>## 🔶🔶🔶 \n## ㄱ 국적은 오보임\n## 🔶🔶🔶 \n... A는 ㄴ 국적의 선수다. </code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<pre><code>##\n## 🔶🔶🔶 ㄱ 국적은 오보임\n##\n... A는 ㄴ 국적의 선수다. </code></pre>"), std::string::npos);
+  EXPECT_EQ(html.find("{{{## 🔶🔶🔶"), std::string::npos);
+  EXPECT_EQ(html.find("{{{##<br"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, IndentedCommentMarkersAndColorAdvancedAreNotCommentsInTableCells) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<table bordercolor=gray><rowbgcolor=#fc6><rowcolor=#000> 입력 || 편집기 || 출력 ||\n"
+      "||{{{가나다라\n"
+      " ## 주석 앞 띄어쓰기\n"
+      "마바사아\n"
+      "}}} ||가나다라\n"
+      " {{{#008000,#608b4e ## 주석 앞 띄어쓰기}}}\n"
+      "마바사아\n"
+      "||가나다라\n"
+      " ## 주석 앞 띄어쓰기\n"
+      "마바사아\n"
+      "||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>가나다라\n ## 주석 앞 띄어쓰기\n마바사아\n</code></pre>"), std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-advanced\" data-advanced=\"#008000,#608b4e\" style=\"color:#008000;\" data-dark-style=\"color:#608b4e;\">## 주석 앞 띄어쓰기</span>"), std::string::npos);
+  EXPECT_NE(html.find("가나다라<br /> ## 주석 앞 띄어쓰기<br />마바사아"), std::string::npos);
+  EXPECT_EQ(html.find("<!-- 주석 앞 띄어쓰기"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-advanced\" data-advanced=\"#008000,#608b4e\" style=\"color:#008000;\" data-dark-style=\"color:#608b4e;\"><!--"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);
@@ -1939,6 +2257,42 @@ TEST(RendererTest, ClosedMultilineWikiTableRowDoesNotSwallowFollowingBlocks) {
             std::string::npos);
   EXPECT_EQ(html.find("리스트를 유지하면서 개행을 넣고자 한다면 설명 문단입니다.</div></td>"),
             std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, WikiCloseTailClearfixRendersOutsideWikiBlock) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki style=\"float: right\"\n"
+      "> 우측 정렬 인용문}}}[clearfix]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+  EXPECT_EQ(doc->first_child->type, NAMUMARK_NODE_WIKI_BLOCK);
+  ASSERT_NE(doc->first_child->next, nullptr);
+  EXPECT_EQ(doc->first_child->next->type, NAMUMARK_NODE_TEXT);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"float: right\">\n<blockquote><div>우측 정렬 인용문</div></blockquote>\n</div>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-clearfix\"></div>"), std::string::npos);
+  EXPECT_EQ(html.find("우측 정렬 인용문}}}"), std::string::npos);
+  EXPECT_EQ(html.find("data-name=\"clearfix\""), std::string::npos);
+  EXPECT_EQ(html.find("<p><div class=\"nm-clearfix\"></div></p>"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);
