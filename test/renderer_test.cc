@@ -725,6 +725,281 @@ TEST(RendererTest, WikiBlockListContinuationTextStaysInListItem) {
   parser_free(parser);
 }
 
+TEST(RendererTest, BlockquotesInTableCellsPreserveLinesAndLists) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<width=30%> 출력 ||\n"
+      "||<|2><width=150px>\n"
+      ">{{{#!wiki style=\"margin: 1em calc(1em + 25px) 1em 1em\"\n"
+      "인용문}}}||\n"
+      "|| 다음 ||\n"
+      "||<|2>\n"
+      ">{{{#!wiki style=\"margin: 1em calc(1em + 25px) 1em 1em\"\n"
+      "문장1[br]문장2}}}||\n"
+      "||<|2>\n"
+      ">{{{#!wiki style=\"margin: 1em calc(1em + 25px) 1em 1em\"\n"
+      "문장1[br][br]문장2}}}||\n"
+      "||<|2><width=150px>\n"
+      ">{{{#!wiki style=\"margin: 1em calc(1em + 25px) 1em 1em\"\n"
+      " * 목록이 담긴 인용문\n"
+      "  * 목록1\n"
+      "  * 목록2}}}||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<blockquote><div><div class=\"nm-wiki-block\" style=\"margin: 1em calc(1em + 25px) 1em 1em\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("문장1<br />문장2"), std::string::npos);
+  EXPECT_NE(html.find("문장1<br /><br />문장2"), std::string::npos);
+  EXPECT_NE(html.find("<li>목록이 담긴 인용문<ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>목록1</li>"), std::string::npos);
+  EXPECT_NE(html.find("<li>목록2</li></ul>"), std::string::npos);
+  EXPECT_EQ(html.find("&gt;{{{#!wiki"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, TableRowWithLiteralAndRenderedBlockquoteList) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "|| 리스트와의 결합 ||{{{> * 목록이 담긴 인용문\n"
+      ">  * 목록1\n"
+      ">  * 목록2}}}||<|2><width=150px>\n"
+      ">{{{#!wiki style=\"margin: 1em calc(1em + 25px) 1em 1em\"\n"
+      " * 목록이 담긴 인용문\n"
+      "  * 목록1\n"
+      "  * 목록2}}}||<|2>인용문 내에서도 리스트를 만들 수 있습니다. 매 줄마다 부등호-띄어쓰기-별표 후 내용을 쓰면 됩니다.[br][br]부등호와 별표 사이를 붙이면 정상 출력되지 않으며, 두 칸 이상 띄어 쓰면 띄어 쓴 만큼의 깊이에 해당하는 하위 리스트의 인용문 내 구현이 가능합니다. ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>&gt; * 목록이 담긴 인용문\n&gt;  * 목록1\n&gt;  * 목록2</code></pre>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td rowspan=\"2\" style=\"width:150px;\"><div><blockquote><div><div class=\"nm-wiki-block\" style=\"margin: 1em calc(1em + 25px) 1em 1em\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("<li>목록이 담긴 인용문<ul>"), std::string::npos);
+  EXPECT_NE(html.find("<li>목록1</li>"), std::string::npos);
+  EXPECT_NE(html.find("<li>목록2</li></ul>"), std::string::npos);
+  EXPECT_EQ(html.find("{{{&gt; * 목록이 담긴 인용문"), std::string::npos);
+  EXPECT_EQ(html.find("<blockquote><div><ul><li></li>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, WikiBlockTableCellLiteralAndRenderedTableList) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki style=\"word-break: keep-all\"\n"
+      "||<rowbgcolor=#00a495,#00a495><rowcolor=#fff><table bgcolor=transparent> 문법 || 출력 ||\n"
+      "||{{{||엔터 키를 이용해 개행하면\n"
+      "----\n"
+      " * 표 안에도 리스트와 수평줄을 삽입할 수 있습니다.||}}}||{{{#!wiki\n"
+      "||엔터 키를 이용해 개행하면\n"
+      "----\n"
+      " * 표 안에도 리스트와 수평줄을 삽입할 수 있습니다.||}}}||}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>||엔터 키를 이용해 개행하면\n----\n * 표 안에도 리스트와 수평줄을 삽입할 수 있습니다.||</code></pre>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\"><table class=\"nm-table\""),
+            std::string::npos);
+  EXPECT_NE(html.find("엔터 키를 이용해 개행하면<hr><ul><li>표 안에도 리스트와 수평줄을 삽입할 수 있습니다.</li></ul>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("표 안에도 리스트와 수평줄을 삽입할 수 있습니다.||}}}||{{{#!wiki"),
+            std::string::npos);
+  EXPECT_EQ(html.find("<ul><li></li>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, WikiBlockTableListDocumentationCases) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki style=\"word-break: keep-all\"\n"
+      "||<rowbgcolor=#00a495,#00a495><rowcolor=#fff><table bgcolor=transparent> 문법 || 출력 ||\n"
+      "||{{{||\n"
+      " * 한칸 표에서 아무것도\n"
+      " * 입력하지 않음||}}}||{{{#!wiki\n"
+      "||\n"
+      " * 한칸 표에서 아무것도\n"
+      " * 입력하지 않음||}}}||\n"
+      "||{{{|| 여러 칸 ||\n"
+      " * 여러 칸에서는\n"
+      " * 오류가 생김||}}}||{{{#!wiki\n"
+      "|| 여러 칸 ||\n"
+      " * 여러 칸에서는\n"
+      " * 오류가 생김||}}}||\n"
+      "||{{{|| 여러 칸 ||{{{#!wiki\n"
+      " * #!wiki 문법으로\n"
+      " * 내용 있는 칸임을 알려줌}}}||}}}||{{{#!wiki\n"
+      "|| 여러 칸 ||{{{#!wiki\n"
+      " * #!wiki 문법으로\n"
+      " * 내용 있는 칸임을 알려줌}}}||}}}||\n"
+      "||{{{|| 여러 칸 ||<-1>\n"
+      " * <테이블 및 셀 속성> 문법으로\n"
+      " * 내용 있는 칸임을 알려줌||}}}||{{{#!wiki\n"
+      "|| 여러 칸 ||<-1>\n"
+      " * <테이블 및 셀 속성> 문법으로\n"
+      " * 내용 있는 칸임을 알려줌||}}}||}}}\n"
+      "표는 한 칸당 한 줄을 차지하게 작성할 수 있습니다.\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<pre><code>||\n * 한칸 표에서 아무것도\n * 입력하지 않음||</code></pre>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td style=\"\"><div><ul><li>한칸 표에서 아무것도</li>\n<li>입력하지 않음</li></ul></div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<pre><code>|| 여러 칸 ||{{{#!wiki\n * #!wiki 문법으로\n * 내용 있는 칸임을 알려줌}}}||</code></pre>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\"><ul>\n<li>#!wiki 문법으로</li>\n<li>내용 있는 칸임을 알려줌</li></ul>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<pre><code>|| 여러 칸 ||&lt;-1&gt;\n * &lt;테이블 및 셀 속성&gt; 문법으로\n * 내용 있는 칸임을 알려줌||</code></pre>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<li>&lt;테이블 및 셀 속성&gt; 문법으로</li>\n<li>내용 있는 칸임을 알려줌</li>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<p>표는 한 칸당 한 줄을 차지하게 작성할 수 있습니다.</p>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("{{{||"), std::string::npos);
+  EXPECT_EQ(html.find("||}}}||{{{#!wiki"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, OneCellPerLineTableDocumentationCase) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "||<colbgcolor=#00a495,#00a495><colcolor=#fff><table bgcolor=transparent> 문법 ||{{{+1 '''기본 문법'''}}}\n"
+      "{{{|| 조지 워싱턴 || 존 애덤스 || 토머스 제퍼슨 ||\n"
+      "|| 존 퀸시 애덤스 || 윌리엄 헨리 해리슨 || 존 타일러 ||}}}\n"
+      "----\n"
+      "{{{+1 '''한 칸마다 개행하는 문법'''}}}\n"
+      "가운데 정렬이 필요하면 2가지 방법이 있습니다.\n"
+      " 1. 셀 하나하나 {{{<:>}}} 옵션을 넣는 방법\n"
+      " 1. 각 칸 내용 뒤쪽의 공백을 개행 후 {{{||}}} 앞에 띄어쓰기를 입력하는 방법\n"
+      "{{{#!wiki style=\"float: left; margin-right: 10px\"\n"
+      "{{{||<:>조지 워싱턴\n"
+      "||<:>존 애덤스\n"
+      "||<:>토머스 제퍼슨\n"
+      "||\n"
+      "||<:>존 퀸시 애덤스\n"
+      "||<:>윌리엄 헨리 해리슨\n"
+      "||<:>존 타일러\n"
+      "||}}}}}}{{{#!wiki style=\"float: left\"\n"
+      "{{{|| 조지 워싱턴\n"
+      " || 존 애덤스\n"
+      " || 토머스 제퍼슨\n"
+      " ||\n"
+      "|| 존 퀸시 애덤스\n"
+      " || 윌리엄 헨리 해리슨\n"
+      " || 존 타일러\n"
+      " ||}}}}}} ||\n"
+      "|| 출력 ||{{{#!wiki\n"
+      "||<:>조지 워싱턴\n"
+      "||<:>존 애덤스\n"
+      "||<:>토머스 제퍼슨\n"
+      "||\n"
+      "||<:>존 퀸시 애덤스\n"
+      "||<:>윌리엄 헨리 해리슨\n"
+      "||<:>존 타일러\n"
+      "||}}}||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<table class=\"nm-table\" style=\"background-color:transparent;\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td style=\"background-color:#00a495;color:#fff;\"><div>문법</div></td>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-advanced\" data-advanced=\"+1\"><strong>기본 문법</strong></span>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<ol><li>셀 하나하나 <code>&lt;:&gt;</code> 옵션을 넣는 방법</li>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"float: left; margin-right: 10px\"><pre><code>||&lt;:&gt;조지 워싱턴"),
+            std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"float: left\"><pre><code>|| 조지 워싱턴"),
+            std::string::npos);
+  EXPECT_NE(html.find("<td style=\"text-align:center;\"><div>조지 워싱턴</div></td><td style=\"text-align:center;\"><div>존 애덤스</div></td>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("}}}{{{#!wiki style=&quot;float: left&quot;"), std::string::npos);
+  EXPECT_EQ(html.find("<hr />\n<pre><code>+1"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, ClosedMultilineWikiTableRowDoesNotSwallowFollowingBlocks) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

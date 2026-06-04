@@ -285,10 +285,22 @@ static int print_html_escaped(FILE *out, const strbuf *value) {
   return 1;
 }
 
+static int print_html_escaped_bytes(FILE *out, const unsigned char *text, bufsize_t len) {
+  strbuf buf;
+  strbuf_init(&buf, len + 1);
+  if (len > 0) {
+    strbuf_set(&buf, text, len);
+  }
+  int ok = print_html_escaped(out, &buf);
+  strbuf_free(&buf);
+  return ok;
+}
+
 static int render_inline_node(FILE *out, const namumark_node *node);
 static int render_block_node(FILE *out, const namumark_node *node);
 static int render_block_children(FILE *out, const namumark_node *parent);
 static int render_inline_snippet(FILE *out, const unsigned char *text, bufsize_t len);
+static int render_table_cell_content(FILE *out, const unsigned char *text, bufsize_t len);
 
 typedef struct footnote_entry {
   strbuf label;
@@ -560,6 +572,10 @@ static int is_footnote_macro_only_text(const namumark_node *node) {
   return node != NULL && node->type == NAMUMARK_NODE_TEXT && node->first_child != NULL &&
          node->first_child == node->last_child && node->first_child->type == NAMUMARK_NODE_MACRO &&
          node->first_child->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE;
+}
+
+static int is_blockquote_sequence_node(const namumark_node *node) {
+  return node != NULL && node->type == NAMUMARK_NODE_BLOCKQUOTE;
 }
 
 static int count_leading_spaces_in_node(const namumark_node *node) {
@@ -1091,6 +1107,8 @@ typedef struct table_render_context {
   strbuf bgcolor;
   strbuf bordercolor;
   strbuf align;
+  strbuf col_bgcolor;
+  strbuf col_color;
 } table_render_context;
 
 static void table_style_init(table_render_style *style) {
@@ -1115,6 +1133,8 @@ static void table_context_init(table_render_context *ctx) {
   strbuf_init(&ctx->bgcolor, 32);
   strbuf_init(&ctx->bordercolor, 32);
   strbuf_init(&ctx->align, 16);
+  strbuf_init(&ctx->col_bgcolor, 32);
+  strbuf_init(&ctx->col_color, 32);
 }
 
 static void table_context_free(table_render_context *ctx) {
@@ -1122,6 +1142,8 @@ static void table_context_free(table_render_context *ctx) {
   strbuf_free(&ctx->bgcolor);
   strbuf_free(&ctx->bordercolor);
   strbuf_free(&ctx->align);
+  strbuf_free(&ctx->col_bgcolor);
+  strbuf_free(&ctx->col_color);
 }
 
 static void set_primary_value(strbuf *dest, const unsigned char *value, bufsize_t len) {
@@ -1235,12 +1257,24 @@ static void parse_table_token(const unsigned char *token, bufsize_t token_len,
     set_primary_value(&row_style->bgcolor, val, val_len);
     return;
   }
+  if (key_len == 8 && memcmp(token, "colcolor", 8) == 0) {
+    set_primary_value(&table_style->col_color, val, val_len);
+    return;
+  }
+  if (key_len == 10 && memcmp(token, "colbgcolor", 10) == 0) {
+    set_primary_value(&table_style->col_bgcolor, val, val_len);
+    return;
+  }
 
   if (key_len == 10 && memcmp(token, "tablewidth", 10) == 0) {
     strbuf_set(&table_style->width, val, val_len);
     return;
   }
   if (key_len == 12 && memcmp(token, "tablebgcolor", 12) == 0) {
+    set_primary_value(&table_style->bgcolor, val, val_len);
+    return;
+  }
+  if (key_len == 13 && memcmp(token, "table bgcolor", 13) == 0) {
     set_primary_value(&table_style->bgcolor, val, val_len);
     return;
   }
@@ -1453,7 +1487,7 @@ static int render_inline_snippet(FILE *out, const unsigned char *text, bufsize_t
 }
 
 static int count_token_occurrences(const unsigned char *text, bufsize_t len,
-                                   const char *token, bufsize_t token_len) {
+                                    const char *token, bufsize_t token_len) {
   int count = 0;
   if (token_len == 0 || len < token_len) {
     return 0;
@@ -1465,6 +1499,20 @@ static int count_token_occurrences(const unsigned char *text, bufsize_t len,
     }
   }
   return count;
+}
+
+static bufsize_t find_token_in_range(const unsigned char *text, bufsize_t start,
+                                     bufsize_t end, const char *token,
+                                     bufsize_t token_len) {
+  if (token_len == 0 || end < start || end - start < token_len) {
+    return -1;
+  }
+  for (bufsize_t i = start; i + token_len <= end; i++) {
+    if (memcmp(text + i, token, (size_t)token_len) == 0) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 static bufsize_t find_wiki_advanced_start(const unsigned char *text, bufsize_t start,
@@ -1489,6 +1537,55 @@ static bufsize_t find_wiki_advanced_start(const unsigned char *text, bufsize_t s
   return -1;
 }
 
+static int is_table_cell_literal_advanced(const unsigned char *text, bufsize_t start,
+                                          bufsize_t end) {
+  if (start + 3 > end || memcmp(text + start, "{{{", 3) != 0) {
+    return 0;
+  }
+  if (start + 3 >= end) {
+    return 1;
+  }
+  unsigned char c = text[start + 3];
+  if (c == '#' || c == '+' || c == '-') {
+    return 0;
+  }
+  return 1;
+}
+
+static int parse_blockquote_line(const unsigned char *text, bufsize_t line_start,
+                                 bufsize_t line_end, bufsize_t *content_start,
+                                 bufsize_t *content_end, int *depth) {
+  bufsize_t i = line_start;
+  int count = 0;
+  while (i < line_end && text[i] == '>') {
+    i++;
+    count++;
+  }
+  if (count == 0) {
+    return 0;
+  }
+  if (i < line_end && text[i] == ' ') {
+    i++;
+  }
+  *depth = count;
+  *content_start = i;
+  *content_end = line_end;
+  while (*content_end > *content_start && text[*content_end - 1] == '\r') {
+    (*content_end)--;
+  }
+  return 1;
+}
+
+static int render_blockquote_body(FILE *out, const unsigned char *text, bufsize_t len) {
+  if (fputs("<blockquote><div>", out) < 0) {
+    return 0;
+  }
+  if (!render_table_cell_content(out, text, len)) {
+    return 0;
+  }
+  return fputs("</div></blockquote>", out) >= 0;
+}
+
 static int render_table_cell_content(FILE *out, const unsigned char *text, bufsize_t len) {
   if (len <= 0) {
     return 1;
@@ -1509,10 +1606,19 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
   bufsize_t line_start = 0;
   int first_plain = 1;
   int in_list = 0;
+  const char *in_list_tag = "ul";
   int in_wiki_advanced = 0;
   int wiki_advanced_depth = 0;
   strbuf wiki_advanced;
   strbuf_init(&wiki_advanced, 128);
+  int in_literal_block = 0;
+  int literal_block_depth = 0;
+  strbuf literal_block;
+  strbuf_init(&literal_block, 128);
+  int in_blockquote = 0;
+  int blockquote_wiki_depth = 0;
+  strbuf blockquote_body;
+  strbuf_init(&blockquote_body, 128);
 
   while (line_start <= len) {
     bufsize_t line_end = line_start;
@@ -1528,6 +1634,58 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     bufsize_t e = line_end;
     while (e > s && (text[e - 1] == ' ' || text[e - 1] == '\r')) {
       e--;
+    }
+
+    if (in_literal_block) {
+      bufsize_t close = -1;
+      bufsize_t scan = line_start;
+      while (scan + 2 < e) {
+        if (text[scan] == '{' && text[scan + 1] == '{' && text[scan + 2] == '{') {
+          literal_block_depth++;
+          scan += 3;
+          continue;
+        }
+        if (text[scan] == '}' && text[scan + 1] == '}' && text[scan + 2] == '}') {
+          literal_block_depth--;
+          if (literal_block_depth <= 0) {
+            close = scan;
+            break;
+          }
+          scan += 3;
+          continue;
+        }
+        scan++;
+      }
+      bufsize_t take_end = close >= 0 ? close : e;
+      if (literal_block.size > 0) {
+        strbuf_putc(&literal_block, '\n');
+      }
+      if (take_end > line_start) {
+        strbuf_put(&literal_block, text + line_start, take_end - line_start);
+      }
+      if (close >= 0) {
+        if (fputs("<pre><code>", out) < 0 || !render_html_entity_or_text(out, literal_block.ptr, literal_block.size) ||
+            fputs("</code></pre>", out) < 0) {
+          strbuf_free(&literal_block);
+          strbuf_free(&blockquote_body);
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        strbuf_clear(&literal_block);
+        in_literal_block = 0;
+        literal_block_depth = 0;
+        first_plain = 0;
+        if (close + 3 < e) {
+          line_start = close + 3;
+          continue;
+        }
+      }
+
+      if (line_end >= len) {
+        break;
+      }
+      line_start = line_end + 1;
+      continue;
     }
 
     if (in_wiki_advanced) {
@@ -1549,6 +1707,7 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
 
       if (wiki_advanced_depth <= 0) {
         if (!render_inline_snippet(out, wiki_advanced.ptr, wiki_advanced.size)) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
@@ -1565,22 +1724,156 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
       continue;
     }
 
-    bufsize_t wiki_start = (e > s) ? find_wiki_advanced_start(text, s, e) : -1;
-    if (wiki_start >= 0) {
-      if (in_list) {
-        if (fputs("</ul>", out) < 0) {
+    if (is_table_cell_literal_advanced(text, s, e) &&
+        !(s + 9 <= e && memcmp(text + s, "{{{#!wiki", 9) == 0)) {
+      bufsize_t close = find_token_in_range(text, s + 3, e, "}}}", 3);
+      if (!first_plain && fputs("<br />", out) < 0) {
+        strbuf_free(&literal_block);
+        strbuf_free(&blockquote_body);
+        strbuf_free(&wiki_advanced);
+        return 0;
+      }
+      if (close >= 0) {
+        if (fputs("<code>", out) < 0 || !print_html_escaped_bytes(out, text + s + 3, close - (s + 3)) ||
+            fputs("</code>", out) < 0) {
+          strbuf_free(&literal_block);
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
-        in_list = 0;
+        first_plain = 0;
+        if (close + 3 < e) {
+          line_start = close + 3;
+          continue;
+        }
+      } else {
+        strbuf_clear(&literal_block);
+        if (s + 3 < e) {
+          strbuf_put(&literal_block, text + s + 3, e - (s + 3));
+        }
+        in_literal_block = 1;
+        literal_block_depth = 1;
+        literal_block_depth += count_token_occurrences(text + s + 3, e - (s + 3), "{{{", 3);
+        literal_block_depth -= count_token_occurrences(text + s + 3, e - (s + 3), "}}}", 3);
+        if (literal_block_depth <= 0) {
+          literal_block_depth = 1;
+        }
+        first_plain = 0;
+      }
+
+      if (line_end >= len) {
+        break;
+      }
+      line_start = line_end + 1;
+      continue;
+    }
+
+    if (in_blockquote && blockquote_wiki_depth > 0) {
+      if (blockquote_body.size > 0) {
+        strbuf_putc(&blockquote_body, '\n');
+      }
+      if (e > line_start) {
+        strbuf_put(&blockquote_body, text + line_start, e - line_start);
+        blockquote_wiki_depth += count_token_occurrences(text + line_start,
+                                                          e - line_start, "{{{", 3);
+        blockquote_wiki_depth -= count_token_occurrences(text + line_start,
+                                                          e - line_start, "}}}", 3);
+        if (blockquote_wiki_depth < 0) {
+          blockquote_wiki_depth = 0;
+        }
+      }
+
+      if (line_end >= len) {
+        break;
+      }
+      line_start = line_end + 1;
+      continue;
+    }
+
+    bufsize_t quote_start = 0;
+    bufsize_t quote_end = 0;
+    int quote_depth = 0;
+    if (parse_blockquote_line(text, s, e, &quote_start, &quote_end, &quote_depth)) {
+      (void)quote_depth;
+      while (in_list > 0) {
+        if (fprintf(out, "</li></%s>", in_list_tag) < 0) {
+          strbuf_free(&blockquote_body);
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        in_list--;
+      }
+      if (!in_blockquote) {
+        if (!first_plain && fputs("<br />", out) < 0) {
+          strbuf_free(&blockquote_body);
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        in_blockquote = 1;
+      } else if (blockquote_body.size > 0) {
+        strbuf_putc(&blockquote_body, '\n');
+      }
+      if (quote_end > quote_start) {
+        strbuf_put(&blockquote_body, text + quote_start, quote_end - quote_start);
+        blockquote_wiki_depth += count_token_occurrences(text + quote_start,
+                                                          quote_end - quote_start, "{{{", 3);
+        blockquote_wiki_depth -= count_token_occurrences(text + quote_start,
+                                                          quote_end - quote_start, "}}}", 3);
+        if (blockquote_wiki_depth < 0) {
+          blockquote_wiki_depth = 0;
+        }
+      }
+      first_plain = 0;
+
+      if (line_end >= len) {
+        break;
+      }
+      line_start = line_end + 1;
+      continue;
+    }
+
+    if (in_blockquote) {
+      if (!render_blockquote_body(out, blockquote_body.ptr, blockquote_body.size)) {
+        strbuf_free(&blockquote_body);
+        strbuf_free(&wiki_advanced);
+        return 0;
+      }
+      strbuf_clear(&blockquote_body);
+      in_blockquote = 0;
+      blockquote_wiki_depth = 0;
+      first_plain = 0;
+    }
+
+    bufsize_t wiki_start = (e > s) ? find_wiki_advanced_start(text, s, e) : -1;
+    if (wiki_start >= 0) {
+      if (in_blockquote) {
+        if (!render_blockquote_body(out, blockquote_body.ptr, blockquote_body.size)) {
+          strbuf_free(&blockquote_body);
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        strbuf_clear(&blockquote_body);
+        in_blockquote = 0;
+        blockquote_wiki_depth = 0;
+        first_plain = 0;
+      }
+      if (in_list) {
+        if (fprintf(out, "</li></%s>", in_list_tag) < 0) {
+          strbuf_free(&blockquote_body);
+          strbuf_free(&wiki_advanced);
+          return 0;
+        }
+        in_list--;
       }
 
       if (wiki_start > s) {
         if (!first_plain && fputs("<br />", out) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
         if (!render_inline_snippet(out, text + s, wiki_start - s)) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
@@ -1598,6 +1891,7 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
 
       if (wiki_advanced_depth <= 0) {
         if (!render_inline_snippet(out, wiki_advanced.ptr, wiki_advanced.size)) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
@@ -1616,6 +1910,7 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     }
 
     int is_list = 0;
+    int is_ordered_list = 0;
     int list_indent = 0;
     bufsize_t list_start = s;
 
@@ -1632,48 +1927,63 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
         if (list_start < line_end && text[list_start] == ' ') {
           list_start++;
         }
+      } else if (leading + 1 < line_end && isdigit(text[leading]) && text[leading + 1] == '.' &&
+                 (leading + 2 >= line_end || text[leading + 2] == ' ')) {
+        is_list = 1;
+        is_ordered_list = 1;
+        list_start = leading + 2;
+        if (list_start < line_end && text[list_start] == ' ') {
+          list_start++;
+        }
       }
     }
 
     if (is_list) {
       while (in_list > list_indent) {
-        if (fputs("</li></ul>", out) < 0) {
+        if (fprintf(out, "</li></%s>", in_list_tag) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
         in_list--;
       }
-      while (in_list < list_indent) {
-        if (fputs("<ul><li>", out) < 0) {
-          strbuf_free(&wiki_advanced);
-          return 0;
-        }
-        in_list++;
-      }
-
       if (in_list == 0) {
-        if (fputs("<ul>", out) < 0) {
+        in_list_tag = is_ordered_list ? "ol" : "ul";
+        if (fprintf(out, "<%s>", in_list_tag) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
         in_list = 1;
         if (fputs("<li>", out) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
       } else {
+        while (in_list < list_indent) {
+          if (fprintf(out, "<%s><li>", in_list_tag) < 0) {
+            strbuf_free(&blockquote_body);
+            strbuf_free(&wiki_advanced);
+            return 0;
+          }
+          in_list++;
+        }
         if (fputs("</li>\n<li>", out) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
       }
       if (!render_inline_snippet(out, text + list_start, e - list_start)) {
+        strbuf_free(&blockquote_body);
         strbuf_free(&wiki_advanced);
         return 0;
       }
     } else {
       while (in_list > 0) {
-        if (fputs("</li></ul>", out) < 0) {
+        if (fprintf(out, "</li></%s>", in_list_tag) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
@@ -1682,15 +1992,18 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
 
       if (is_horizontal_rule_text(text + s, e - s)) {
         if (fputs("<hr>", out) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
       } else if (e > s) {
         if (!first_plain && fputs("<br />", out) < 0) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
         if (!render_inline_snippet(out, text + s, e - s)) {
+          strbuf_free(&blockquote_body);
           strbuf_free(&wiki_advanced);
           return 0;
         }
@@ -1705,20 +2018,31 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
   }
 
   while (in_list > 0) {
-    if (fputs("</li></ul>", out) < 0) {
+    if (fprintf(out, "</li></%s>", in_list_tag) < 0) {
+      strbuf_free(&blockquote_body);
       strbuf_free(&wiki_advanced);
       return 0;
     }
     in_list--;
   }
 
-  if (wiki_advanced.size > 0) {
-    if (!render_inline_snippet(out, wiki_advanced.ptr, wiki_advanced.size)) {
+  if (in_blockquote) {
+    if (!render_blockquote_body(out, blockquote_body.ptr, blockquote_body.size)) {
+      strbuf_free(&blockquote_body);
       strbuf_free(&wiki_advanced);
       return 0;
     }
   }
 
+  if (wiki_advanced.size > 0) {
+    if (!render_inline_snippet(out, wiki_advanced.ptr, wiki_advanced.size)) {
+      strbuf_free(&blockquote_body);
+      strbuf_free(&wiki_advanced);
+      return 0;
+    }
+  }
+
+  strbuf_free(&blockquote_body);
   strbuf_free(&wiki_advanced);
 
   return 1;
@@ -1753,6 +2077,7 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
   table_style_init(&row_style);
 
   bufsize_t p = s + 2;
+  int cell_index = 0;
   while (p < line_end) {
     bufsize_t sep = find_table_cell_separator(row->ptr, p, line_end);
 
@@ -1830,6 +2155,9 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
 
     const strbuf *bgcolor = (cell_style.bgcolor.size > 0) ? &cell_style.bgcolor :
                             (row_style.bgcolor.size > 0) ? &row_style.bgcolor : NULL;
+    if (bgcolor == NULL && cell_index == 0 && table_style->col_bgcolor.size > 0) {
+      bgcolor = &table_style->col_bgcolor;
+    }
     if (bgcolor != NULL && bgcolor->size > 0) {
       if (fputs("background-color:", out) < 0 || !print_html_escaped(out, bgcolor) ||
           fputs(";", out) < 0) {
@@ -1842,6 +2170,9 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
 
     const strbuf *color = (cell_style.color.size > 0) ? &cell_style.color :
                           (row_style.color.size > 0) ? &row_style.color : NULL;
+    if (color == NULL && cell_index == 0 && table_style->col_color.size > 0) {
+      color = &table_style->col_color;
+    }
     if (color != NULL && color->size > 0) {
       if (fputs("color:", out) < 0 || !print_html_escaped(out, color) || fputs(";", out) < 0) {
         table_style_free(&cell_style);
@@ -1892,6 +2223,7 @@ static int render_table_row(FILE *out, const strbuf *row, int row_index,
     if (sep < 0 || sep + 1 >= line_end) {
       break;
     }
+    cell_index++;
     p = sep + 2;
   }
 
@@ -2072,11 +2404,28 @@ static int render_block_node(FILE *out, const namumark_node *node) {
       return 1;
     }
     case NAMUMARK_NODE_BLOCKQUOTE:
-      if (fputs("<blockquote>", out) < 0 || !render_inline_children(out, node) ||
-          fputs("</blockquote>\n", out) < 0) {
+    {
+      strbuf body;
+      strbuf_init(&body, node->content.size + 1);
+
+      const namumark_node *quote = node;
+      while (quote != NULL && is_blockquote_sequence_node(quote)) {
+        if (body.size > 0) {
+          strbuf_putc(&body, '\n');
+        }
+        if (quote->content.size > 0) {
+          strbuf_put(&body, quote->content.ptr, quote->content.size);
+        }
+        quote = quote->next;
+      }
+
+      int ok = render_blockquote_body(out, body.ptr, body.size) && fputs("\n", out) >= 0;
+      strbuf_free(&body);
+      if (!ok) {
         return 0;
       }
       return 1;
+    }
     case NAMUMARK_NODE_HORIZONTAL_RULE:
       return fputs("<hr />\n", out) >= 0;
     case NAMUMARK_NODE_TABLE: {
@@ -2334,6 +2683,11 @@ static int render_block_children(FILE *out, const namumark_node *parent) {
     /* If LIST, skip following LIST siblings (already consumed inside render_block_node) */
     if (child->type == NAMUMARK_NODE_LIST) {
       while (child->next != NULL && is_rendered_list_sequence_node(child->next)) {
+        child = child->next;
+      }
+    }
+    if (child->type == NAMUMARK_NODE_BLOCKQUOTE) {
+      while (child->next != NULL && is_blockquote_sequence_node(child->next)) {
         child = child->next;
       }
     }

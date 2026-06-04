@@ -653,6 +653,27 @@ static int line_ends_with_table_sep(const unsigned char *line, bufsize_t len) {
   return tail >= len;
 }
 
+static int line_has_trailing_table_sep(const unsigned char *line, bufsize_t len) {
+  if (len < 2) {
+    return 0;
+  }
+
+  bufsize_t end = len;
+  while (end > 0 && line[end - 1] == ' ') {
+    end--;
+  }
+  return end >= 2 && line[end - 2] == '|' && line[end - 1] == '|';
+}
+
+static int is_empty_table_row_line(const unsigned char *line, bufsize_t len) {
+  bufsize_t start = skip_spaces(line, len, 0);
+  bufsize_t end = len;
+  while (end > start && line[end - 1] == ' ') {
+    end--;
+  }
+  return end == start + 2 && line[start] == '|' && line[start + 1] == '|';
+}
+
 static void update_table_wiki_depth(namumark_parser *parser, const unsigned char *line,
                                     bufsize_t len) {
   int starts = 0;
@@ -1063,7 +1084,7 @@ void process_line(namumark_parser *parser) {
 
   if (parser->table_continuation && parser->root->last_child != NULL &&
       parser->root->last_child->type == NAMUMARK_NODE_TABLE &&
-      !is_table_row_start(line, len) && parser->table_wiki_block_depth > 0) {
+      (!is_table_row_start(line, len) || parser->table_wiki_nonwiki_depth > 0)) {
     namumark_node *table = parser->root->last_child;
     strbuf_putc(&table->content, '\n');
     strbuf_put(&table->content, line, len);
@@ -1071,7 +1092,8 @@ void process_line(namumark_parser *parser) {
     table->end_column = (int)len;
 
     update_table_wiki_depth(parser, line, len);
-    if (parser->table_wiki_block_depth <= 0 && line_ends_with_table_sep(line, len)) {
+    if (parser->table_wiki_block_depth <= 0 && parser->table_wiki_nonwiki_depth <= 0 &&
+        line_has_trailing_table_sep(line, len)) {
       parser->table_continuation = false;
     }
 
@@ -1247,7 +1269,10 @@ void process_line(namumark_parser *parser) {
       parser->table_wiki_nonwiki_depth = 0;
     }
     update_table_wiki_depth(parser, line, len);
-    parser->table_continuation = parser->table_wiki_block_depth > 0 || !line_ends_with_table_sep(line, len);
+    parser->table_continuation = is_empty_table_row_line(line, len) ||
+                                 parser->table_wiki_block_depth > 0 ||
+                                 parser->table_wiki_nonwiki_depth > 0 ||
+                                 !line_ends_with_table_sep(line, len);
     namumark_node *table = NULL;
     if (parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_TABLE) {
       table = parser->root->last_child;
