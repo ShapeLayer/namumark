@@ -81,6 +81,7 @@ static int render_block_node(FILE *out, const namumark_node *node);
 static int render_block_children(FILE *out, const namumark_node *parent);
 static int render_inline_snippet(FILE *out, const unsigned char *text, bufsize_t len);
 static int render_table_cell_content(FILE *out, const unsigned char *text, bufsize_t len);
+static int is_table_line_start_for_render(const unsigned char *line, bufsize_t len);
 
 typedef struct footnote_entry {
   strbuf label;
@@ -702,7 +703,7 @@ static int render_youtube_macro(FILE *out, const namumark_node *node) {
     end--;
   }
 
-  if (fputs("<iframe allowfullscreen=\"\" width=\"640\" height=\"360\" frameborder=\"0\" src=\"//www.youtube.com/embed/", out) < 0) {
+  if (fputs("<iframe allowfullscreen=\"\" width=\"640\" height=\"360\" frameborder=\"0\" src=\"https://www.youtube.com/embed/", out) < 0) {
     return 0;
   }
   if (end > start && !print_html_escaped_bytes(out, node->args.ptr + start, end - start)) {
@@ -2172,8 +2173,32 @@ static int render_table_cell_content(FILE *out, const unsigned char *text, bufsi
     }
   }
 
+  if (!has_newline && is_table_line_start_for_render(text, len)) {
+    namumark_node table = {0};
+    table.type = NAMUMARK_NODE_TABLE;
+    strbuf_init(&table.content, len + 1);
+    strbuf_set(&table.content, text, len);
+    int ok = render_block_node(out, &table);
+    strbuf_free(&table.content);
+    return ok;
+  }
+
   if (!has_newline) {
     return render_inline_snippet(out, text, len);
+  }
+
+  bufsize_t first_line_end = 0;
+  while (first_line_end < len && text[first_line_end] != '\n') {
+    first_line_end++;
+  }
+  if (is_table_line_start_for_render(text, first_line_end)) {
+    namumark_node table = {0};
+    table.type = NAMUMARK_NODE_TABLE;
+    strbuf_init(&table.content, len + 1);
+    strbuf_set(&table.content, text, len);
+    int ok = render_block_node(out, &table);
+    strbuf_free(&table.content);
+    return ok;
   }
 
   bufsize_t line_start = 0;

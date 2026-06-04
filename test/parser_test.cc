@@ -90,6 +90,28 @@ TEST(ParserTest, ParsesHeadingAndInlineChildren) {
   parser_free(parser);
 }
 
+TEST(ParserTest, ParsesFoldedHeadingMarker) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input = "==# 매크로 미지원 플랫폼의 동영상 삽입 #==\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_NE(doc->first_child, nullptr);
+
+  const namumark_node *heading = doc->first_child;
+  EXPECT_EQ(heading->type, NAMUMARK_NODE_HEADING);
+  EXPECT_EQ(heading->level, 2);
+  EXPECT_EQ(heading->folded, 1);
+  EXPECT_STREQ(reinterpret_cast<const char *>(heading->content.ptr),
+               "매크로 미지원 플랫폼의 동영상 삽입");
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(ParserTest, SupportsCRLFLineEndings) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

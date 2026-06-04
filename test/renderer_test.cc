@@ -37,6 +37,78 @@ TEST(RendererTest, HtmlIsProduced) {
   parser_free(parser);
 }
 
+TEST(RendererTest, FoldedHeadingRendersExpandedHeading) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input = "==# 매크로 미지원 플랫폼의 동영상 삽입 #==\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<h2>매크로 미지원 플랫폼의 동영상 삽입</h2>"), std::string::npos);
+  EXPECT_EQ(html.find("==#"), std::string::npos);
+  EXPECT_EQ(html.find("<details"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, ListItemMultilineWikiBlockContinuesInsideItem) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      " * {{{#!wiki style=\"display: inline; background: orange; padding: 2px 3px; border-radius: 5px\"\n"
+      "{{{#fff '''orange'''}}}}}}\n"
+      " 가장 일반적인 색으로, 주의 문구에 주로 쓰입니다. 예) [[틀:사건사고]]\n"
+      " * {{{#!wiki style=\"display: inline; background: crimson; padding: 2px 3px; border-radius: 5px\"\n"
+      "{{{#fff '''crimson'''}}}}}}\n"
+      " orange보다 조금 더 강한 경고에 주로 쓰입니다. 예) [[틀:설명문서]]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  size_t orange_item = html.find("<li><span class=\"nm-wiki-block\" style=\"display: inline; background: orange; padding: 2px 3px; border-radius: 5px\"");
+  size_t orange_body = html.find("<br />가장 일반적인 색으로", orange_item);
+  size_t crimson_item = html.find("</li>\n<li><span class=\"nm-wiki-block\" style=\"display: inline; background: crimson; padding: 2px 3px; border-radius: 5px\"", orange_body);
+  size_t crimson_body = html.find("<br />orange보다 조금 더 강한 경고", crimson_item);
+  size_t close_pos = html.find("</li></ul>", crimson_body);
+
+  EXPECT_NE(orange_item, std::string::npos);
+  EXPECT_NE(orange_body, std::string::npos);
+  EXPECT_NE(crimson_item, std::string::npos);
+  EXPECT_NE(crimson_body, std::string::npos);
+  EXPECT_NE(close_pos, std::string::npos);
+  EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
+  EXPECT_EQ(html.find("}}}"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, MultiLineTableRendersAsTable) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -442,6 +514,167 @@ TEST(RendererTest, InlineWikiAdvancedAfterPrefixTextInTableCell) {
   EXPECT_NE(html.find("<a id=\"object-fit\"></a>"), std::string::npos);
   EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"display: flex\""), std::string::npos);
   EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, EmbeddedBlockWikiAfterParagraphTextCollectsNestedTable) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "숫자는 19~26 정도가 적당합니다.{{{#!wiki style=\"max-width: 1000px\"\n"
+      "||<tablewidth=100%><colbgcolor=#fc6><colcolor=#000><width=1><colkeepall> 문법 ||{{{#!folding [ 문법 펼치기 · 접기 ]\n"
+      "{{{||<tablewidth=100%><bgcolor=#090> '''{{{#fff 표 제목}}}''' ||\n"
+      "}}} }}}||\n"
+      "}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("숫자는 19~26 정도가 적당합니다."), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"max-width: 1000px\">"), std::string::npos);
+  EXPECT_NE(html.find("<table"), std::string::npos);
+  EXPECT_NE(html.find("<details class=\"nm-folding\"><summary>[ 문법 펼치기 · 접기 ]"),
+            std::string::npos);
+  EXPECT_EQ(html.find("{{{#!wiki style=\"max-width: 1000px\""), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, ListContinuationKeepsEmbeddedWikiTableAndFolding) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "  * 방법 2\n"
+      "  접기 틀 바깥의 wiki 틀 설명입니다.{{{#!wiki style=\"max-width: 1000px\"\n"
+      "||<tablewidth=100%><colbgcolor=#fc6><colcolor=#000><width=1><colkeepall> 문법 ||{{{#!folding [ 문법 펼치기 · 접기 ]\n"
+      "{{{||<tablewidth=100%><bgcolor=#090> '''{{{#fff 표 제목}}}''' ||\n"
+      "}}} }}}||\n"
+      "|| 결과 ||{{{#!wiki\n"
+      "||<tablewidth=100%><bgcolor=#090> '''{{{#fff 표 제목}}}''' ||\n"
+      "||<keepall> {{{#!wiki style=\"display: inline-block; min-width: 25%\"\n"
+      "{{{#!folding [ 틀 1 ]\n"
+      "||<width=999> 틀 1 내용 ||\n"
+      "}}}\n"
+      "}}} ||}}}||\n"
+      "}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  size_t list_pos = html.find("<ul>\n<li>방법 2");
+  size_t wiki_pos = html.find("<div class=\"nm-wiki-block\" style=\"max-width: 1000px\">", list_pos);
+  size_t folding_pos = html.find("<details class=\"nm-folding\"><summary>[ 틀 1 ]</summary>", wiki_pos);
+  size_t table_pos = html.find("<td style=\"width:999;\"><div>틀 1 내용</div></td>", folding_pos);
+  size_t list_close_pos = html.find("</li></ul>", table_pos);
+
+  EXPECT_NE(list_pos, std::string::npos);
+  EXPECT_NE(wiki_pos, std::string::npos);
+  EXPECT_NE(folding_pos, std::string::npos);
+  EXPECT_NE(table_pos, std::string::npos);
+  EXPECT_NE(list_close_pos, std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, OneSpaceIndentedListItemsRenderAsSiblingsWithBodies) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "* <width=9999>\n"
+      " [[espejo]] 스킨 기준 컨텐츠가 들어갈 수 있는 공간의 최대 너비는 약 1518px입니다.\n"
+      " 외부 틀의 tablewidth가 절대값이라면 해당 값보다 적당이 큰 값을 내부 틀의 width에 선언하면 됩니다.\n"
+      " * margin: -5px 0 -10px\n"
+      " 테이블에는 상하 10px의 외부 여백이 있으므로 이를 적절히 조절해야 합니다.\n"
+      " margin에 값이 3개일 경우, 첫 번째부터 상, 좌우, 하 순서로 여백이 선언된 것입니다.\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  size_t ul_pos = html.find("<ul>\n");
+  size_t first_item = html.find("<li>&lt;width=9999&gt;<br /><a href=\"espejo\">espejo</a>", ul_pos);
+  size_t second_item = html.find("</li>\n<li>margin: -5px 0 -10px<br />", first_item);
+  size_t close_pos = html.find("</li></ul>", second_item);
+
+  EXPECT_NE(ul_pos, std::string::npos);
+  EXPECT_NE(first_item, std::string::npos);
+  EXPECT_NE(second_item, std::string::npos);
+  EXPECT_NE(close_pos, std::string::npos);
+  EXPECT_EQ(html.find("<ul>\n<li>margin: -5px 0 -10px", first_item), std::string::npos);
+  EXPECT_EQ(html.find("</ul>\n<p>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, FoldingBodyStartingWithTableRendersTable) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!folding [ 틀 1 ]\n"
+      "||<width=999> 틀 1 내용 ||\n"
+      "}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<details class=\"nm-folding\"><summary>[ 틀 1 ]</summary>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<table class=\"nm-table\""), std::string::npos);
+  EXPECT_NE(html.find("<td style=\"width:999;\"><div>틀 1 내용</div></td>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("||&lt;width=999&gt; 틀 1 내용 ||"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);
@@ -986,7 +1219,7 @@ TEST(RendererTest, YoutubeMacroRendersIframeInWikiTableCell) {
   free(buf);
 
   EXPECT_NE(html.find("<table class=\"nm-table\" style=\"background-color:yellow;border:2px solid red;\">"), std::string::npos);
-  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"margin: -5px -10px\"><iframe allowfullscreen=\"\" width=\"640\" height=\"360\" frameborder=\"0\" src=\"//www.youtube.com/embed/jNQXAC9IVRw\" loading=\"lazy\"></iframe></div>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"margin: -5px -10px\"><iframe allowfullscreen=\"\" width=\"640\" height=\"360\" frameborder=\"0\" src=\"https://www.youtube.com/embed/jNQXAC9IVRw\" loading=\"lazy\"></iframe></div>"), std::string::npos);
   EXPECT_EQ(html.find("data-name=\"youtube\""), std::string::npos);
   EXPECT_EQ(html.find("[youtube(jNQXAC9IVRw)]"), std::string::npos);
 
