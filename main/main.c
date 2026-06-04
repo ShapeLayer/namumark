@@ -18,10 +18,10 @@ static void print_usage(void) {
 int main(int argc, char *argv[]) {
   int i, file_counts = 0;
   int output_ast = 0;
-  char **files;
+  char **files = NULL;
   unsigned char buffer[4096];
   size_t bytes;
-  namumark_parser *parser;
+  namumark_parser *parser = NULL;
   namumark_node *document = NULL;
   int ret = 1;
 

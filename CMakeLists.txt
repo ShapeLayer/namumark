@@ -17,7 +17,8 @@ add_library(namumark-lib STATIC
   lib/inlines.c
   lib/node.c
   lib/parser.c
-  lib/renderer.c
+  lib/renderer_ast.c
+  lib/renderer_html.c
   lib/strbuf.c
 )
 

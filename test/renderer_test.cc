@@ -451,6 +451,51 @@ TEST(RendererTest, InlineDisplayWikiAdvancedRendersAsSpan) {
   parser_free(parser);
 }
 
+TEST(RendererTest, StyleAdvancedAndWikiAttributesRender) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!style\n"
+      ".blur {display: inline; text-shadow: 0 0 6px #0275d8; color: transparent}\n"
+      ".blur:hover {text-shadow: 0 0 0px #0275d8}\n"
+      "}}}\n"
+      "{{{#!wiki style=\"background-color: #fff; border: 1px solid #dfe1e2; border-radius: 4px; font-size: .9rem; margin: 0 0 1em; padding: .2rem .5rem\" dark-style=\"background-color: #1c1d1f; border-color: #5c5c5c\"\n"
+      "분류: [[:분류:분류|분류]]{{{#!wiki style=\"border-left: 1px solid #888; display: inline-block; height: .8rem; margin: 0 .4rem -.1rem\"\n"
+      "}}}[[:분류:나무위키|{{{#!wiki class=\"blur\"\n"
+      "나무위키}}}]]}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<style>.blur {display: inline; text-shadow: 0 0 6px #0275d8; color: transparent}"), std::string::npos);
+  EXPECT_NE(html.find(".blur:hover {text-shadow: 0 0 0px #0275d8}</style>"), std::string::npos);
+  EXPECT_EQ(html.find("<p><style>"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"background-color: #fff; border: 1px solid #dfe1e2; border-radius: 4px; font-size: .9rem; margin: 0 0 1em; padding: .2rem .5rem\" data-dark-style=\"background-color: #1c1d1f; border-color: #5c5c5c\""), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"border-left: 1px solid #888; display: inline-block; height: .8rem; margin: 0 .4rem -.1rem\""), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block blur\">"), std::string::npos);
+  EXPECT_NE(html.find("분류: <a href=\":분류:분류\">분류</a><div class=\"nm-wiki-block\""), std::string::npos);
+  EXPECT_NE(html.find("<a href=\":분류:나무위키\"><div class=\"nm-wiki-block blur\">나무위키</div></a>"), std::string::npos);
+  EXPECT_EQ(html.find("<p>분류:"), std::string::npos);
+  EXPECT_EQ(html.find("<p></p>"), std::string::npos);
+  EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
+  EXPECT_EQ(html.find("{{{#!style"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, FootnotesRenderReferencesAndMacroList) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -491,6 +536,72 @@ TEST(RendererTest, FootnotesRenderReferencesAndMacroList) {
             std::string::npos);
   EXPECT_EQ(html.find("<p><div class=\"nm-footnotes\">"), std::string::npos);
   EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"각주\">"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, FootnotesContainNestedLinksAndMacros) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "색상 {{{#1c1d1f}}}[* [[위키/스킨|기본 스킨]] espejo의 배경색] 다음\n"
+      "파일 {{{#000}}}[* [[:파일:nogray.svg|\"검은화면으로\"]] 설정을 켰을 때의 배경색] 다음\n"
+      "텍스트[*B 기재된 색상은 기본값을 의미하며, [[#텍스트 색상|색상 문법]]을 이용해 변경 가능.]\n"
+      "표[*B] 각주[*B]\n"
+      "[각주]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<span class=\"nm-footnote\"><span id=\"fn-1\"></span><a href=\"#rfn-1\">[1]</a> <a href=\"위키/스킨\">기본 스킨</a> espejo의 배경색</span>"), std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-footnote\"><span id=\"fn-2\"></span><a href=\"#rfn-2\">[2]</a> <a href=\":파일:nogray.svg\">&quot;검은화면으로&quot;</a> 설정을 켰을 때의 배경색</span>"), std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-footnote\"><span id=\"fn-B\"></span>[B] <a href=\"#rfn-3\"><sup>3.1</sup></a> <a href=\"#rfn-4\"><sup>3.2</sup></a> <a href=\"#rfn-5\"><sup>3.3</sup></a> 기재된 색상은 기본값을 의미하며, <a href=\"#텍스트 색상\">색상 문법</a>을 이용해 변경 가능.</span>"), std::string::npos);
+  EXPECT_EQ(html.find("위키/스킨|기본 스킨"), std::string::npos);
+  EXPECT_EQ(html.find("파일:nogray.svg|"), std::string::npos);
+  EXPECT_EQ(html.find("] 다음"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, FootnoteMacroDoesNotNestBlockInParagraph) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "본문[* 각주]\n"
+      "[각주][include(틀:문서 가져옴)]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_EQ(html.find("<p><div class=\"nm-footnotes\">"), std::string::npos);
+  EXPECT_NE(html.find("<div class=\"nm-footnotes\">\n<span class=\"nm-footnote\""), std::string::npos);
+  EXPECT_NE(html.find("<p><span class=\"nm-macro\" data-name=\"include\">include(틀:문서 가져옴)</span></p>"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);

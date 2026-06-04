@@ -76,6 +76,71 @@ check_alias:
   return 1;
 }
 
+static int attr_name_matches(const unsigned char *name, bufsize_t name_len, const char *attr) {
+  bufsize_t attr_len = (bufsize_t)strlen(attr);
+  return name_len == attr_len && memcmp(name, attr, (size_t)attr_len) == 0;
+}
+
+static void extract_wiki_attr(const unsigned char *text, bufsize_t len, const char *attr,
+                              bufsize_t *value_start, bufsize_t *value_len) {
+  *value_start = 0;
+  *value_len = 0;
+
+  bufsize_t i = 6;
+  while (i < len && (text[i] == ' ' || text[i] == '\t')) {
+    i++;
+  }
+
+  while (i < len && text[i] != '\n' && text[i] != '\r') {
+    while (i < len && (text[i] == ' ' || text[i] == '\t')) {
+      i++;
+    }
+    bufsize_t name_start = i;
+    while (i < len && ((text[i] >= 'a' && text[i] <= 'z') ||
+                       (text[i] >= 'A' && text[i] <= 'Z') ||
+                       (text[i] >= '0' && text[i] <= '9') || text[i] == '-')) {
+      i++;
+    }
+    bufsize_t name_len = i - name_start;
+    while (i < len && (text[i] == ' ' || text[i] == '\t')) {
+      i++;
+    }
+    if (name_len == 0 || i >= len || text[i] != '=') {
+      return;
+    }
+    i++;
+    while (i < len && (text[i] == ' ' || text[i] == '\t')) {
+      i++;
+    }
+
+    bufsize_t val_start = i;
+    bufsize_t val_len = 0;
+    if (i < len && text[i] == '"') {
+      val_start = i + 1;
+      i++;
+      while (i < len && text[i] != '"') {
+        i++;
+      }
+      val_len = i - val_start;
+      if (i < len && text[i] == '"') {
+        i++;
+      }
+    } else {
+      while (i < len && text[i] != ' ' && text[i] != '\t' && text[i] != '\n' &&
+             text[i] != '\r') {
+        i++;
+      }
+      val_len = i - val_start;
+    }
+
+    if (attr_name_matches(text + name_start, name_len, attr)) {
+      *value_start = val_start;
+      *value_len = val_len;
+      return;
+    }
+  }
+}
+
 static bufsize_t find_token(const strbuf *source, const char *token, bufsize_t from) {
   bufsize_t token_len = (bufsize_t)strlen(token);
   if (token_len == 0 || from < 0 || from >= source->size) {
@@ -117,6 +182,54 @@ static bufsize_t find_link_close(const strbuf *source, bufsize_t open_pos) {
       }
       i++;
       continue;
+    }
+  }
+
+  return -1;
+}
+
+static bufsize_t find_advanced_close(const strbuf *source, bufsize_t open_pos);
+static bool find_macro_close(const strbuf *source, bufsize_t open_bracket, bufsize_t *close_out);
+
+static bufsize_t find_footnote_close(const strbuf *source, bufsize_t open_pos) {
+  if (source == NULL || open_pos < 0 || open_pos + 2 > source->size) {
+    return -1;
+  }
+
+  for (bufsize_t i = open_pos + 2; i < source->size; i++) {
+    if (source->ptr[i] == '\\') {
+      if (i + 1 < source->size) {
+        i++;
+      }
+      continue;
+    }
+
+    if (i + 2 <= source->size && memcmp(source->ptr + i, "[[", 2) == 0) {
+      bufsize_t close = find_link_close(source, i);
+      if (close >= 0) {
+        i = close + 1;
+        continue;
+      }
+    }
+
+    if (i + 3 <= source->size && memcmp(source->ptr + i, "{{{", 3) == 0) {
+      bufsize_t close = find_advanced_close(source, i);
+      if (close >= 0) {
+        i = close + 2;
+        continue;
+      }
+    }
+
+    if (source->ptr[i] == '[') {
+      bufsize_t close = -1;
+      if (find_macro_close(source, i, &close)) {
+        i = close;
+        continue;
+      }
+    }
+
+    if (source->ptr[i] == ']') {
+      return i;
     }
   }
 
@@ -281,34 +394,19 @@ static void parse_advanced_content(namumark_node *node) {
     if (node->content.size >= 7 && memcmp(node->content.ptr, "#!wiki", 6) == 0) {
       node->advanced_type = NAMUMARK_NODE_ADVANCED_WIKI;
 
-      bufsize_t i = 6;
-      while (i < node->content.size && (node->content.ptr[i] == ' ' || node->content.ptr[i] == '\t')) {
-        i++;
+      bufsize_t value_start = 0;
+      bufsize_t value_len = 0;
+      extract_wiki_attr(node->content.ptr, node->content.size, "style", &value_start, &value_len);
+      if (value_len > 0) {
+        strbuf_set(&node->args, node->content.ptr + value_start, value_len);
       }
-
-      if (i + 6 <= node->content.size && memcmp(node->content.ptr + i, "style=", 6) == 0) {
-        i += 6;
-        if (i < node->content.size) {
-          if (node->content.ptr[i] == '"') {
-            bufsize_t q = i + 1;
-            while (q < node->content.size && node->content.ptr[q] != '"') {
-              q++;
-            }
-            if (q >= i + 1 && q < node->content.size) {
-              strbuf_set(&node->args, node->content.ptr + i + 1, q - (i + 1));
-            }
-          } else {
-            bufsize_t end = i;
-            while (end < node->content.size && node->content.ptr[end] != ' ' &&
-                   node->content.ptr[end] != '\t' && node->content.ptr[end] != '\n' &&
-                   node->content.ptr[end] != '\r') {
-              end++;
-            }
-            if (end > i) {
-              strbuf_set(&node->args, node->content.ptr + i, end - i);
-            }
-          }
-        }
+      extract_wiki_attr(node->content.ptr, node->content.size, "class", &value_start, &value_len);
+      if (value_len > 0) {
+        strbuf_set(&node->label, node->content.ptr + value_start, value_len);
+      }
+      extract_wiki_attr(node->content.ptr, node->content.size, "dark-style", &value_start, &value_len);
+      if (value_len > 0) {
+        strbuf_set(&node->target, node->content.ptr + value_start, value_len);
       }
 
       return;
@@ -461,7 +559,7 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     }
 
     if (starts_with_at(source, i, "[*")) {
-      bufsize_t close = find_token(source, "]", i + 2);
+      bufsize_t close = find_footnote_close(source, i);
       if (close >= 0) {
         append_text_segment(source, plain_start, i - plain_start, parent, line_number);
         append_node_from_range(NAMUMARK_NODE_FOOTNOTE_REFERENCE, source, i + 2,

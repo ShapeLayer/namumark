@@ -495,13 +495,20 @@ static int starts_with_wiki_block(const unsigned char *line, bufsize_t len) {
   return memcmp(line + start, prefix, (size_t)prefix_len) == 0;
 }
 
-static void extract_wiki_block_style(const unsigned char *line, bufsize_t len,
-                                     bufsize_t *style_start, bufsize_t *style_len) {
+static int wiki_attr_name_matches(const unsigned char *name, bufsize_t name_len,
+                                  const char *attr) {
+  bufsize_t attr_len = (bufsize_t)strlen(attr);
+  return name_len == attr_len && memcmp(name, attr, (size_t)attr_len) == 0;
+}
+
+static void extract_wiki_block_attribute(const unsigned char *line, bufsize_t len,
+                                         const char *attr, bufsize_t *value_start,
+                                         bufsize_t *value_len) {
   static const char prefix[] = "{{{#!wiki";
   static const bufsize_t prefix_len = sizeof(prefix) - 1;
 
-  *style_start = 0;
-  *style_len = 0;
+  *value_start = 0;
+  *value_len = 0;
 
   bufsize_t pos = skip_spaces(line, len, 0);
   if (pos + prefix_len > len || memcmp(line + pos, prefix, (size_t)prefix_len) != 0) {
@@ -513,36 +520,75 @@ static void extract_wiki_block_style(const unsigned char *line, bufsize_t len,
     pos++;
   }
 
-  static const char style_key[] = "style=";
-  static const bufsize_t style_key_len = sizeof(style_key) - 1;
-  if (pos + style_key_len > len || memcmp(line + pos, style_key, (size_t)style_key_len) != 0) {
-    return;
-  }
-  pos += style_key_len;
-
-  if (pos >= len) {
-    return;
-  }
-
-  if (line[pos] == '"') {
-    bufsize_t q = pos + 1;
-    while (q < len && line[q] != '"') {
-      q++;
+  while (pos < len && line[pos] != '\n' && line[pos] != '\r') {
+    while (pos < len && (line[pos] == ' ' || line[pos] == '\t')) {
+      pos++;
     }
-    if (q >= pos + 1 && q < len && line[q] == '"') {
-      *style_start = pos + 1;
-      *style_len = q - (pos + 1);
+    bufsize_t name_start = pos;
+    while (pos < len && ((line[pos] >= 'a' && line[pos] <= 'z') ||
+                         (line[pos] >= 'A' && line[pos] <= 'Z') ||
+                         (line[pos] >= '0' && line[pos] <= '9') || line[pos] == '-')) {
+      pos++;
+    }
+    bufsize_t name_len = pos - name_start;
+    while (pos < len && (line[pos] == ' ' || line[pos] == '\t')) {
+      pos++;
+    }
+    if (name_len == 0 || pos >= len || line[pos] != '=') {
+      return;
+    }
+    pos++;
+    while (pos < len && (line[pos] == ' ' || line[pos] == '\t')) {
+      pos++;
+    }
+
+    bufsize_t val_start = pos;
+    bufsize_t val_len = 0;
+    if (pos < len && line[pos] == '"') {
+      val_start = pos + 1;
+      pos++;
+      while (pos < len && line[pos] != '"') {
+        pos++;
+      }
+      val_len = pos - val_start;
+      if (pos < len && line[pos] == '"') {
+        pos++;
+      }
+    } else {
+      while (pos < len && line[pos] != ' ' && line[pos] != '\t' &&
+             line[pos] != '\n' && line[pos] != '\r') {
+        pos++;
+      }
+      val_len = pos - val_start;
+    }
+
+    if (wiki_attr_name_matches(line + name_start, name_len, attr)) {
+      *value_start = val_start;
+      *value_len = val_len;
       return;
     }
   }
+}
 
-  bufsize_t end = len;
-  while (end > pos && line[end - 1] == ' ') {
-    end--;
+static void extract_wiki_block_attributes(const unsigned char *line, bufsize_t len,
+                                          namumark_node *wiki) {
+  if (wiki == NULL) {
+    return;
   }
-  if (end > pos) {
-    *style_start = pos;
-    *style_len = end - pos;
+
+  bufsize_t value_start = 0;
+  bufsize_t value_len = 0;
+  extract_wiki_block_attribute(line, len, "style", &value_start, &value_len);
+  if (value_len > 0) {
+    strbuf_set(&wiki->args, line + value_start, value_len);
+  }
+  extract_wiki_block_attribute(line, len, "class", &value_start, &value_len);
+  if (value_len > 0) {
+    strbuf_set(&wiki->label, line + value_start, value_len);
+  }
+  extract_wiki_block_attribute(line, len, "dark-style", &value_start, &value_len);
+  if (value_len > 0) {
+    strbuf_set(&wiki->target, line + value_start, value_len);
   }
 }
 
@@ -863,12 +909,7 @@ static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigne
   }
   wiki->start_column = (int)skip_spaces(line, len, 0) + 1;
 
-  bufsize_t style_start = 0;
-  bufsize_t style_len = 0;
-  extract_wiki_block_style(line, len, &style_start, &style_len);
-  if (style_len > 0) {
-    strbuf_set(&wiki->args, line + style_start, style_len);
-  }
+  extract_wiki_block_attributes(line, len, wiki);
 
   bufsize_t ignored_end = 0;
   int starts = 0;
@@ -934,12 +975,7 @@ void process_line(namumark_parser *parser) {
 
         namumark_node *next_wiki = append_block_text(parser, NAMUMARK_NODE_WIKI_BLOCK, NULL, 0);
         if (next_wiki != NULL) {
-          bufsize_t style_start = 0;
-          bufsize_t style_len = 0;
-          extract_wiki_block_style(line + after, len - after, &style_start, &style_len);
-          if (style_len > 0) {
-            strbuf_set(&next_wiki->args, line + after + style_start, style_len);
-          }
+          extract_wiki_block_attributes(line + after, len - after, next_wiki);
 
           bufsize_t ignored_end = 0;
           int starts_after = 0;
