@@ -410,6 +410,14 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
   bufsize_t plain_start = 0;
 
   while (i < source->size) {
+    if (source->ptr[i] == '\\' && i + 1 < source->size && ispunct((unsigned char)source->ptr[i + 1])) {
+      append_text_segment(source, plain_start, i - plain_start, parent, line_number);
+      append_text_segment(source, i + 1, 1, parent, line_number);
+      i += 2;
+      plain_start = i;
+      continue;
+    }
+
     if (starts_with_at(source, i, "{{{")) {
       bufsize_t close = find_advanced_close(source, i);
       if (close >= 0) {

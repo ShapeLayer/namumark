@@ -424,6 +424,84 @@ TEST(RendererTest, InlineDisplayWikiAdvancedRendersAsSpan) {
   parser_free(parser);
 }
 
+TEST(RendererTest, FootnotesRenderReferencesAndMacroList) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "기본 [* 텍스트 1]\n"
+      "이름 [*A 텍스트 2] 재참조 [*A]\n"
+      "한글 [*예시 텍스트 3]\n"
+      "[각주]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<a class=\"nm-footnote-ref\" href=\"#fn-1\"><span id=\"rfn-1\"></span>[1]</a>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<a class=\"nm-footnote-ref\" href=\"#fn-A\"><span id=\"rfn-2\"></span>[A]</a>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<a class=\"nm-footnote-ref\" href=\"#fn-A\"><span id=\"rfn-3\"></span>[A]</a>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<a class=\"nm-footnote-ref\" href=\"#fn-%ec%98%88%ec%8b%9c\"><span id=\"rfn-4\"></span>[예시]</a>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-footnote\"><span id=\"fn-1\"></span><a href=\"#rfn-1\">[1]</a> 텍스트 1</span>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-footnote\"><span id=\"fn-A\"></span>[A] <a href=\"#rfn-2\"><sup>2.1</sup></a> <a href=\"#rfn-3\"><sup>2.2</sup></a> 텍스트 2</span>"),
+            std::string::npos);
+  EXPECT_NE(html.find("<span class=\"nm-footnote\"><span id=\"fn-예시\"></span><a href=\"#rfn-4\">[예시]</a> 텍스트 3</span>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("<p><div class=\"nm-footnotes\">"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-macro\" data-name=\"각주\">"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, EscapedFootnoteMarkupInWikiBlockRendersAsExampleText) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "{{{#!wiki style=\"font-family: monospace\"\n"
+      "\\[*{{{#red ○}}}텍스트 1]}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<div class=\"nm-wiki-block\" style=\"font-family: monospace\">"),
+            std::string::npos);
+  EXPECT_NE(html.find("[*<span class=\"nm-advanced\" data-advanced=\"#red\" style=\"color:red;\">○</span>텍스트 1]"),
+            std::string::npos);
+  EXPECT_EQ(html.find("nm-footnote-ref"), std::string::npos);
+  EXPECT_EQ(html.find("\\<a class=\"nm-footnote-ref\""), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, NestedFileLinkLabelRendersWithoutBrokenAnchor) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

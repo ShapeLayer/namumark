@@ -288,6 +288,264 @@ static int print_html_escaped(FILE *out, const strbuf *value) {
 static int render_inline_node(FILE *out, const namumark_node *node);
 static int render_block_node(FILE *out, const namumark_node *node);
 static int render_block_children(FILE *out, const namumark_node *parent);
+static int render_inline_snippet(FILE *out, const unsigned char *text, bufsize_t len);
+
+typedef struct footnote_entry {
+  strbuf label;
+  strbuf content;
+  int *refs;
+  int ref_count;
+  int ref_capacity;
+} footnote_entry;
+
+typedef struct footnote_render_context {
+  footnote_entry *entries;
+  int entry_count;
+  int entry_capacity;
+  int next_ref;
+  int rendered_count;
+} footnote_render_context;
+
+static footnote_render_context *active_footnotes = NULL;
+
+static void footnote_context_init(footnote_render_context *ctx) {
+  ctx->entries = NULL;
+  ctx->entry_count = 0;
+  ctx->entry_capacity = 0;
+  ctx->next_ref = 0;
+  ctx->rendered_count = 0;
+}
+
+static void footnote_context_free(footnote_render_context *ctx) {
+  if (ctx == NULL) {
+    return;
+  }
+  for (int i = 0; i < ctx->entry_count; i++) {
+    strbuf_free(&ctx->entries[i].label);
+    strbuf_free(&ctx->entries[i].content);
+    free(ctx->entries[i].refs);
+  }
+  free(ctx->entries);
+  ctx->entries = NULL;
+  ctx->entry_count = 0;
+  ctx->entry_capacity = 0;
+}
+
+static int strbuf_equals_bytes(const strbuf *buf, const unsigned char *data, bufsize_t len) {
+  return buf != NULL && buf->size == len && (len == 0 || memcmp(buf->ptr, data, len) == 0);
+}
+
+static int footnote_find_entry(footnote_render_context *ctx, const unsigned char *label,
+                               bufsize_t label_len) {
+  for (int i = 0; i < ctx->entry_count; i++) {
+    if (strbuf_equals_bytes(&ctx->entries[i].label, label, label_len)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static footnote_entry *footnote_add_entry(footnote_render_context *ctx, const unsigned char *label,
+                                          bufsize_t label_len, const unsigned char *content,
+                                          bufsize_t content_len) {
+  if (ctx->entry_count >= ctx->entry_capacity) {
+    int new_capacity = ctx->entry_capacity == 0 ? 8 : ctx->entry_capacity * 2;
+    footnote_entry *entries = (footnote_entry *)realloc(ctx->entries,
+                                                        sizeof(footnote_entry) * new_capacity);
+    if (entries == NULL) {
+      return NULL;
+    }
+    ctx->entries = entries;
+    ctx->entry_capacity = new_capacity;
+  }
+
+  footnote_entry *entry = &ctx->entries[ctx->entry_count++];
+  memset(entry, 0, sizeof(*entry));
+  strbuf_init(&entry->label, label_len + 1);
+  strbuf_init(&entry->content, content_len + 1);
+  strbuf_set(&entry->label, label, label_len);
+  if (content != NULL && content_len > 0) {
+    strbuf_set(&entry->content, content, content_len);
+  }
+  return entry;
+}
+
+static footnote_entry *footnote_get_or_add_entry(footnote_render_context *ctx,
+                                                 const unsigned char *label,
+                                                 bufsize_t label_len,
+                                                 const unsigned char *content,
+                                                 bufsize_t content_len) {
+  int index = footnote_find_entry(ctx, label, label_len);
+  if (index >= 0) {
+    footnote_entry *entry = &ctx->entries[index];
+    if (content != NULL && content_len > 0 && entry->content.size == 0) {
+      strbuf_set(&entry->content, content, content_len);
+    }
+    return entry;
+  }
+  return footnote_add_entry(ctx, label, label_len, content, content_len);
+}
+
+static int footnote_add_ref(footnote_entry *entry, int ref_id) {
+  if (entry->ref_count >= entry->ref_capacity) {
+    int new_capacity = entry->ref_capacity == 0 ? 2 : entry->ref_capacity * 2;
+    int *refs = (int *)realloc(entry->refs, sizeof(int) * new_capacity);
+    if (refs == NULL) {
+      return 0;
+    }
+    entry->refs = refs;
+    entry->ref_capacity = new_capacity;
+  }
+  entry->refs[entry->ref_count++] = ref_id;
+  return 1;
+}
+
+static int print_fragment_href(FILE *out, const strbuf *label) {
+  static const char hex[] = "0123456789abcdef";
+  for (bufsize_t i = 0; i < label->size; i++) {
+    unsigned char c = label->ptr[i];
+    int unreserved = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+    if (unreserved) {
+      if (fputc((int)c, out) == EOF) {
+        return 0;
+      }
+    } else {
+      if (fputc('%', out) == EOF || fputc(hex[c >> 4], out) == EOF ||
+          fputc(hex[c & 0x0f], out) == EOF) {
+        return 0;
+      }
+    }
+  }
+  return 1;
+}
+
+static void parse_inline_footnote(const strbuf *raw, const unsigned char **label,
+                                  bufsize_t *label_len, const unsigned char **content,
+                                  bufsize_t *content_len, int *has_explicit_label) {
+  *label = NULL;
+  *label_len = 0;
+  *content = raw->ptr;
+  *content_len = raw->size;
+  *has_explicit_label = 0;
+
+  if (raw->size == 0 || isspace((unsigned char)raw->ptr[0])) {
+    bufsize_t start = 0;
+    while (start < raw->size && isspace((unsigned char)raw->ptr[start])) {
+      start++;
+    }
+    *content = raw->ptr + start;
+    *content_len = raw->size - start;
+    return;
+  }
+
+  bufsize_t split = 0;
+  while (split < raw->size && !isspace((unsigned char)raw->ptr[split])) {
+    split++;
+  }
+
+  *label = raw->ptr;
+  *label_len = split;
+  *has_explicit_label = 1;
+
+  if (split >= raw->size) {
+    *content = raw->ptr + raw->size;
+    *content_len = 0;
+    return;
+  }
+
+  split++;
+  while (split < raw->size && isspace((unsigned char)raw->ptr[split])) {
+    split++;
+  }
+  *content = raw->ptr + split;
+  *content_len = raw->size - split;
+}
+
+static int render_footnote_reference(FILE *out, const namumark_node *node) {
+  if (active_footnotes == NULL) {
+    return print_html_escaped(out, &node->content);
+  }
+
+  const unsigned char *label = NULL;
+  const unsigned char *content = NULL;
+  bufsize_t label_len = 0;
+  bufsize_t content_len = 0;
+  int has_explicit_label = 0;
+  parse_inline_footnote(&node->content, &label, &label_len, &content, &content_len,
+                        &has_explicit_label);
+
+  int ref_id = ++active_footnotes->next_ref;
+  char auto_label[32];
+  if (!has_explicit_label) {
+    int auto_len = snprintf(auto_label, sizeof(auto_label), "%d", ref_id);
+    label = (const unsigned char *)auto_label;
+    label_len = auto_len > 0 ? (bufsize_t)auto_len : 0;
+  }
+
+  footnote_entry *entry = footnote_get_or_add_entry(active_footnotes, label, label_len,
+                                                    content, content_len);
+  if (entry == NULL || !footnote_add_ref(entry, ref_id)) {
+    return 0;
+  }
+
+  if (fputs("<a class=\"nm-footnote-ref\" href=\"#fn-", out) < 0 ||
+      !print_fragment_href(out, &entry->label) || fprintf(out, "\"><span id=\"rfn-%d\"></span>[", ref_id) < 0 ||
+      !print_html_escaped(out, &entry->label) || fputs("]</a>", out) < 0) {
+    return 0;
+  }
+  return 1;
+}
+
+static int render_footnote_list(FILE *out) {
+  if (active_footnotes == NULL || active_footnotes->rendered_count >= active_footnotes->entry_count) {
+    return 1;
+  }
+
+  int start = active_footnotes->rendered_count;
+  if (fputs("<div class=\"nm-footnotes\">\n", out) < 0) {
+    return 0;
+  }
+
+  for (int i = start; i < active_footnotes->entry_count; i++) {
+    footnote_entry *entry = &active_footnotes->entries[i];
+    if (fputs("<span class=\"nm-footnote\"><span id=\"fn-", out) < 0 ||
+        !print_html_escaped(out, &entry->label) || fputs("\"></span>", out) < 0) {
+      return 0;
+    }
+
+    if (entry->ref_count <= 1) {
+      if (entry->ref_count == 1) {
+        if (fprintf(out, "<a href=\"#rfn-%d\">[", entry->refs[0]) < 0 ||
+            !print_html_escaped(out, &entry->label) || fputs("]</a> ", out) < 0) {
+          return 0;
+        }
+      } else if (fputc('[', out) == EOF || !print_html_escaped(out, &entry->label) ||
+                 fputs("] ", out) < 0) {
+        return 0;
+      }
+    } else {
+      if (fputc('[', out) == EOF || !print_html_escaped(out, &entry->label) || fputs("] ", out) < 0) {
+        return 0;
+      }
+      int first_ref = entry->refs[0];
+      for (int ref_index = 0; ref_index < entry->ref_count; ref_index++) {
+        if (fprintf(out, "<a href=\"#rfn-%d\"><sup>%d.%d</sup></a> ",
+                    entry->refs[ref_index], first_ref, ref_index + 1) < 0) {
+          return 0;
+        }
+      }
+    }
+
+    if (!render_inline_snippet(out, entry->content.ptr, entry->content.size) ||
+        fputs("</span>\n", out) < 0) {
+      return 0;
+    }
+  }
+
+  active_footnotes->rendered_count = active_footnotes->entry_count;
+  return fputs("</div>\n", out) >= 0;
+}
 
 static int is_list_continuation_text(const namumark_node *node) {
   return node != NULL && node->type == NAMUMARK_NODE_TEXT && node->content.size > 0 &&
@@ -296,6 +554,12 @@ static int is_list_continuation_text(const namumark_node *node) {
 
 static int is_rendered_list_sequence_node(const namumark_node *node) {
   return node != NULL && (node->type == NAMUMARK_NODE_LIST || is_list_continuation_text(node));
+}
+
+static int is_footnote_macro_only_text(const namumark_node *node) {
+  return node != NULL && node->type == NAMUMARK_NODE_TEXT && node->first_child != NULL &&
+         node->first_child == node->last_child && node->first_child->type == NAMUMARK_NODE_MACRO &&
+         node->first_child->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE;
 }
 
 static int count_leading_spaces_in_node(const namumark_node *node) {
@@ -678,9 +942,14 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
         return 0;
       }
       return fputs("</a>", out) >= 0;
+    case NAMUMARK_NODE_FOOTNOTE_REFERENCE:
+      return render_footnote_reference(out, node);
     case NAMUMARK_NODE_MACRO:
       if (node->macro_type == NAMUMARK_NODE_MACRO_BREAKLINE) {
         return fputs("<br />", out) >= 0;
+      }
+      if (node->macro_type == NAMUMARK_NODE_MACRO_FOOTNOTE) {
+        return render_footnote_list(out);
       }
       if (fputs("<span class=\"nm-macro\" data-name=\"", out) < 0 ||
           !print_html_escaped(out, &node->target) || fputs("\">", out) < 0 ||
@@ -2029,13 +2298,21 @@ static int render_block_node(FILE *out, const namumark_node *node) {
       }
       return 1;
     case NAMUMARK_NODE_FOOTNOTE_DEFINITION:
-      if (fputs("<div class=\"nm-footnote\" data-label=\"", out) < 0 ||
-          !print_html_escaped(out, &node->label) || fputs("\">", out) < 0 ||
-          !render_inline_children(out, node) || fputs("</div>\n", out) < 0) {
-        return 0;
+      if (active_footnotes != NULL) {
+        return footnote_get_or_add_entry(active_footnotes, node->label.ptr, node->label.size,
+                                         node->content.ptr, node->content.size) != NULL;
+      } else {
+        if (fputs("<div class=\"nm-footnote\" data-label=\"", out) < 0 ||
+            !print_html_escaped(out, &node->label) || fputs("\">", out) < 0 ||
+            !render_inline_children(out, node) || fputs("</div>\n", out) < 0) {
+          return 0;
+        }
       }
       return 1;
     case NAMUMARK_NODE_TEXT:
+      if (is_footnote_macro_only_text(node)) {
+        return render_inline_children(out, node);
+      }
       if (fputs("<p>", out) < 0 || !render_inline_children(out, node) || fputs("</p>\n", out) < 0) {
         return 0;
       }
@@ -2070,17 +2347,31 @@ int print_document_html(const namumark_node *document, FILE *out) {
     return 0;
   }
 
+  footnote_render_context footnotes;
+  footnote_context_init(&footnotes);
+  footnote_render_context *previous_footnotes = active_footnotes;
+  active_footnotes = &footnotes;
+
   if (fputs("<article class=\"namumark\">\n", out) < 0) {
+    active_footnotes = previous_footnotes;
+    footnote_context_free(&footnotes);
     return 0;
   }
 
   if (!render_block_children(out, document)) {
+    active_footnotes = previous_footnotes;
+    footnote_context_free(&footnotes);
     return 0;
   }
 
-  if (fputs("</article>\n", out) < 0) {
+  if (!render_footnote_list(out) || fputs("</article>\n", out) < 0) {
+    active_footnotes = previous_footnotes;
+    footnote_context_free(&footnotes);
     return 0;
   }
+
+  active_footnotes = previous_footnotes;
+  footnote_context_free(&footnotes);
   return 1;
 }
 
