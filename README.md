@@ -2,6 +2,9 @@
 
 A parser that processes Namu Wiki's markup system. Syntax revision is based on the [(ko) Namuwiki Syntax Guide](https://namu.wiki/w/%EB%82%98%EB%AC%B4%EC%9C%84%ED%82%A4:%EB%AC%B8%EB%B2%95%20%EB%8F%84%EC%9B%80%EB%A7%90) accessed on 2026-06-03.  
 
+> [!NOTE]  
+> `math` macro(TeX syntax) is not supported: The math macro is interpreted by the namumark parser without being rendered. Similar to cmark-gfm([\#1](https://github.com/github/cmark-gfm/issues/6), [\#2](https://github.blog/news-insights/product-news/math-support-in-markdown/)), math rendering is deemed out of scope for this project. We suggest utilizing front-end TeX libraries like MathJax for rendering mathematical expressions.
+
 ## Build
 
 ```bash
