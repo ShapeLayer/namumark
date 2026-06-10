@@ -27,8 +27,8 @@ const char *namumark_status_message(namumark_status status) {
 }
 
 static namumark_status render_document_to_stream(namumark_node *document,
-                                                 namumark_output_format format,
-                                                 FILE *stream) {
+                                                  namumark_output_format format,
+                                                  FILE *stream) {
   int ok = 0;
   switch (format) {
     case NAMUMARK_OUTPUT_HTML:
@@ -41,6 +41,37 @@ static namumark_status render_document_to_stream(namumark_node *document,
       return NAMUMARK_ERROR_INVALID_ARGUMENT;
   }
   return ok ? NAMUMARK_OK : NAMUMARK_ERROR_RENDER;
+}
+
+static namumark_status read_stream_to_buffer(FILE *stream,
+                                             namumark_buffer *output) {
+  long file_size;
+  char *data;
+
+  if (fflush(stream) != 0 || fseek(stream, 0, SEEK_END) != 0) {
+    return NAMUMARK_ERROR_RENDER;
+  }
+
+  file_size = ftell(stream);
+  if (file_size < 0 || fseek(stream, 0, SEEK_SET) != 0) {
+    return NAMUMARK_ERROR_RENDER;
+  }
+
+  data = (char *)malloc((size_t)file_size + 1);
+  if (data == NULL) {
+    return NAMUMARK_ERROR_ALLOCATION;
+  }
+
+  if (file_size > 0 &&
+      fread(data, 1, (size_t)file_size, stream) != (size_t)file_size) {
+    free(data);
+    return NAMUMARK_ERROR_RENDER;
+  }
+
+  data[file_size] = '\0';
+  output->data = data;
+  output->size = (size_t)file_size;
+  return NAMUMARK_OK;
 }
 
 namumark_status namumark_render(const char *input, size_t input_size,
@@ -70,33 +101,20 @@ namumark_status namumark_render(const char *input, size_t input_size,
     return NAMUMARK_ERROR_PARSE;
   }
 
-  char *data = NULL;
-  size_t size = 0;
-  /*
-   * open_memstream gives the renderers a FILE* without exposing FILE ownership
-   * to embedders.  The resulting heap buffer becomes namumark_buffer::data on
-   * success and is freed locally on render failure.
-   */
-  FILE *stream = open_memstream(&data, &size);
+  FILE *stream = tmpfile();
   if (stream == NULL) {
     namumark_node_free(document);
     return NAMUMARK_ERROR_ALLOCATION;
   }
 
   namumark_status status = render_document_to_stream(document, format, stream);
-  if (fclose(stream) != 0 && status == NAMUMARK_OK) {
-    status = NAMUMARK_ERROR_RENDER;
+  if (status == NAMUMARK_OK) {
+    status = read_stream_to_buffer(stream, output);
   }
+  fclose(stream);
   namumark_node_free(document);
 
-  if (status != NAMUMARK_OK) {
-    free(data);
-    return status;
-  }
-
-  output->data = data;
-  output->size = size;
-  return NAMUMARK_OK;
+  return status;
 }
 
 namumark_status namumark_render_html(const char *input, size_t input_size,
