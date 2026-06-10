@@ -144,6 +144,45 @@ TEST(RendererTest, MultiLineTableRendersAsTable) {
   parser_free(parser);
 }
 
+TEST(RendererTest, ClassedWikiBlockPreservesElementForDocumentStyles) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "주어진 표현식이 참일 때, {{{#!wiki class=\"code\"\n"
+      "{{{if}}}}}} 문법 내부의 내용이 출력됩니다.\n"
+      "수치형으로 변환하려면 {{{#!wiki class=\"code\"\n"
+      "{{{(+num)}}}}}}, {{{#!wiki class=\"code\"\n"
+      "{{{(num * 1)}}}}}} 등을 사용합니다.\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<p>주어진 표현식이 참일 때, <div class=\"nm-wiki-block code\"><pre><code>if</code></pre></div> 문법 내부의 내용이 출력됩니다.</p>"),
+            std::string::npos);
+  EXPECT_NE(html.find("수치형으로 변환하려면 <div class=\"nm-wiki-block code\"><pre><code>(+num)</code></pre></div>, <div class=\"nm-wiki-block code\"><pre><code>(num * 1)</code></pre></div> 등을 사용합니다."),
+            std::string::npos);
+  EXPECT_EQ(html.find("<p>주어진 표현식이 참일 때, </p>"), std::string::npos);
+  EXPECT_EQ(html.find("<p>문법 내부"), std::string::npos);
+  EXPECT_EQ(html.find("<p><div class=\"nm-wiki-block code\">"), std::string::npos);
+  EXPECT_EQ(html.find("<code>if</code> 문법"), std::string::npos);
+  EXPECT_EQ(html.find("{{{#!wiki"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, AstIsProduced) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
@@ -446,6 +485,73 @@ TEST(RendererTest, ExternalLinkLabelRendersInlineAdvancedHtml) {
   EXPECT_NE(html.find("<a href=\"https://www.google.com/\">"), std::string::npos);
   EXPECT_NE(html.find("&#8203https://&#8203www&#8203.&#8203google&#8203.&#8203com&#8203/"), std::string::npos);
   EXPECT_EQ(html.find("{{{#!html"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, InlineAdvancedHtmlRendersRawTagsAndNamedEntities) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "변수는 {{{#!html <span style=\"font-family: monospace;\">&commat;매개변수&commat;</span>}}} 문법으로 출력합니다.\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<p>변수는 <span style=\"font-family: monospace;\">&commat;매개변수&commat;</span> 문법으로 출력합니다.</p>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("&lt;span style="), std::string::npos);
+  EXPECT_EQ(html.find("&amp;commat;"), std::string::npos);
+  EXPECT_EQ(html.find("{{{#!html"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, IfAdvancedRendersTruthyAdjacentBodiesInline) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "'''{{{#red 주의 1}}}''': &&(논리곱), ||(논리합) 연산자와 &(비트곱), |(비트합) 연산자의 혼동을 주의하세요. 서로 동작이 다릅니다.\n"
+      "\n"
+      "{{{#!if true^false\n"
+      "'''{{{#red 주의 2}}}''': ^를 배타적 논리합([[XOR]]) 연산자로 사용할 수 있으나, }}}{{{#!if !(true^true)\n"
+      "하술할 비트 연산의 배타적 비트합과 혼동되지 않도록 주의하세요.}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  EXPECT_NE(html.find("<strong><span class=\"nm-advanced\" data-advanced=\"#red\" style=\"color:red;\">주의 1</span></strong>: &amp;&amp;(논리곱), ||(논리합) 연산자와 &amp;(비트곱), |(비트합) 연산자의 혼동을 주의하세요."),
+            std::string::npos);
+  EXPECT_NE(html.find("<p><strong><span class=\"nm-advanced\" data-advanced=\"#red\" style=\"color:red;\">주의 2</span></strong>: ^를 배타적 논리합(<a href=\"XOR\">XOR</a>) 연산자로 사용할 수 있으나, 하술할 비트 연산의 배타적 비트합과 혼동되지 않도록 주의하세요.</p>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("#!if"), std::string::npos);
+  EXPECT_EQ(html.find("<span class=\"nm-advanced\">#!if"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);
@@ -1408,6 +1514,52 @@ TEST(RendererTest, FootnoteMacroDoesNotNestBlockInParagraph) {
   EXPECT_EQ(html.find("<p><div class=\"nm-footnotes\">"), std::string::npos);
   EXPECT_NE(html.find("<div class=\"nm-footnotes\">\n<span class=\"nm-footnote\""), std::string::npos);
   EXPECT_NE(html.find("<p><span class=\"nm-macro\" data-name=\"include\">include(틀:문서 가져옴)</span></p>"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, FootnoteIncludeAndTrailingStyleRenderInOrder) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  const char *input =
+      "본문[* 출처]\n"
+      "[각주][include(틀:문서 가져옴, title=나무위키:문법 도움말/심화/HTML, version=49, uuid=49c171dd-bbef-4a52-9ce4-d14ed497f804)]{{{#!style\n"
+      ".code { display: inline-block; padding: 0 .25rem; background: #bfe9d5; border-radius: .5rem; font-size: .875rem; }\n"
+      "@theseed-dark-mode {\n"
+      "  .code { background: #383b40; }\n"
+      "}\n"
+      "}}}\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_html(doc, fp));
+  fclose(fp);
+
+  std::string html(buf, len);
+  free(buf);
+
+  size_t footnotes = html.find("<div class=\"nm-footnotes\">\n<span class=\"nm-footnote\"");
+  size_t include = html.find("<p><span class=\"nm-macro\" data-name=\"include\">include(틀:문서 가져옴, title=나무위키:문법 도움말/심화/HTML, version=49, uuid=49c171dd-bbef-4a52-9ce4-d14ed497f804)</span></p>");
+  size_t style = html.find("<style>.code { display: inline-block; padding: 0 .25rem; background: #bfe9d5; border-radius: .5rem; font-size: .875rem; }");
+
+  EXPECT_NE(footnotes, std::string::npos);
+  EXPECT_NE(include, std::string::npos);
+  EXPECT_NE(style, std::string::npos);
+  EXPECT_LT(footnotes, include);
+  EXPECT_LT(include, style);
+  EXPECT_NE(html.find("@theseed-dark-mode {\n  .code { background: #383b40; }\n}</style>"),
+            std::string::npos);
+  EXPECT_EQ(html.find("{{{#!style"), std::string::npos);
+  EXPECT_EQ(html.find("<p><style>"), std::string::npos);
+  EXPECT_EQ(html.find("@theseed-dark-mode {</p>"), std::string::npos);
 
   namumark_node_free(doc);
   parser_free(parser);

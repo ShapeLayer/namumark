@@ -83,6 +83,86 @@ static int render_inline_snippet(FILE *out, const unsigned char *text, bufsize_t
 static int render_table_cell_content(FILE *out, const unsigned char *text, bufsize_t len);
 static int is_table_line_start_for_render(const unsigned char *line, bufsize_t len);
 
+typedef struct if_expr_parser {
+  const unsigned char *text;
+  bufsize_t len;
+  bufsize_t pos;
+  int ok;
+} if_expr_parser;
+
+static void if_expr_skip_spaces(if_expr_parser *parser) {
+  while (parser->pos < parser->len &&
+         (parser->text[parser->pos] == ' ' || parser->text[parser->pos] == '\t')) {
+    parser->pos++;
+  }
+}
+
+static int if_expr_parse_xor(if_expr_parser *parser);
+
+static int if_expr_parse_primary(if_expr_parser *parser) {
+  if_expr_skip_spaces(parser);
+  if (!parser->ok || parser->pos >= parser->len) {
+    parser->ok = 0;
+    return 0;
+  }
+
+  if (parser->text[parser->pos] == '!') {
+    parser->pos++;
+    return !if_expr_parse_primary(parser);
+  }
+
+  if (parser->text[parser->pos] == '(') {
+    parser->pos++;
+    int value = if_expr_parse_xor(parser);
+    if_expr_skip_spaces(parser);
+    if (parser->pos >= parser->len || parser->text[parser->pos] != ')') {
+      parser->ok = 0;
+      return 0;
+    }
+    parser->pos++;
+    return value;
+  }
+
+  if (parser->pos + 4 <= parser->len &&
+      memcmp(parser->text + parser->pos, "true", 4) == 0) {
+    parser->pos += 4;
+    return 1;
+  }
+
+  if (parser->pos + 5 <= parser->len &&
+      memcmp(parser->text + parser->pos, "false", 5) == 0) {
+    parser->pos += 5;
+    return 0;
+  }
+
+  parser->ok = 0;
+  return 0;
+}
+
+static int if_expr_parse_xor(if_expr_parser *parser) {
+  int value = if_expr_parse_primary(parser);
+  while (parser->ok) {
+    if_expr_skip_spaces(parser);
+    if (parser->pos >= parser->len || parser->text[parser->pos] != '^') {
+      break;
+    }
+    parser->pos++;
+    value = (!!value) ^ (!!if_expr_parse_primary(parser));
+  }
+  return value;
+}
+
+static int eval_if_expression(const unsigned char *text, bufsize_t len, int *value) {
+  if_expr_parser parser = {text, len, 0, 1};
+  int result = if_expr_parse_xor(&parser);
+  if_expr_skip_spaces(&parser);
+  if (!parser.ok || parser.pos != parser.len) {
+    return 0;
+  }
+  *value = !!result;
+  return 1;
+}
+
 typedef struct footnote_entry {
   strbuf label;
   strbuf content;
@@ -371,13 +451,19 @@ static int is_block_macro(const namumark_node *node) {
           node->macro_type == NAMUMARK_NODE_MACRO_CLEARFIX);
 }
 
+static int is_inline_block_node(const namumark_node *node) {
+  return is_block_macro(node) ||
+         (node != NULL && node->type == NAMUMARK_NODE_ADVANCED &&
+          node->advanced_type == NAMUMARK_NODE_ADVANCED_STYLE);
+}
+
 static int text_contains_block_macro(const namumark_node *node) {
   if (node == NULL || node->type != NAMUMARK_NODE_TEXT) {
     return 0;
   }
   const namumark_node *child = node->first_child;
   while (child != NULL) {
-    if (is_block_macro(child)) {
+    if (is_inline_block_node(child)) {
       return 1;
     }
     child = child->next;
@@ -390,7 +476,7 @@ static int render_text_with_block_macro(FILE *out, const namumark_node *node) {
   int paragraph_open = 0;
 
   while (child != NULL) {
-    if (is_block_macro(child)) {
+    if (is_inline_block_node(child)) {
       if (paragraph_open) {
         if (fputs("</p>\n", out) < 0) {
           return 0;
@@ -1182,11 +1268,6 @@ static int wiki_body_needs_block_rendering(const strbuf *body) {
 static int render_wiki_advanced_block(FILE *out, const namumark_node *node) {
   int inline_mode = style_has_inline_display(&node->args);
 
-  const char *tag = wiki_render_tag(node, inline_mode);
-  if (!render_wiki_block_open(out, tag, node)) {
-    return 0;
-  }
-
   strbuf body;
   strbuf_init(&body, node->content.size + 1);
   bufsize_t start = wiki_advanced_body_start(node);
@@ -1196,6 +1277,12 @@ static int render_wiki_advanced_block(FILE *out, const namumark_node *node) {
     while (body.size > 0 && (body.ptr[body.size - 1] == '\n' || body.ptr[body.size - 1] == '\r')) {
       strbuf_truncate(&body, body.size - 1);
     }
+  }
+
+  const char *tag = wiki_render_tag(node, inline_mode);
+  if (!render_wiki_block_open(out, tag, node)) {
+    strbuf_free(&body);
+    return 0;
   }
 
   if (inline_mode || !wiki_body_needs_block_rendering(&body)) {
@@ -1279,6 +1366,49 @@ static int render_folding_advanced_block(FILE *out, const namumark_node *node) {
     }
   }
   return fputs("</div></details>", out) >= 0;
+}
+
+static int render_if_advanced_block(FILE *out, const namumark_node *node) {
+  if (node == NULL || node->content.size < 4) {
+    return 1;
+  }
+
+  bufsize_t line_end = strbuf_strchr(&node->content, '\n', 0);
+  if (line_end < 0) {
+    line_end = node->content.size;
+  }
+
+  bufsize_t expr_start = 4;
+  while (expr_start < line_end &&
+         (node->content.ptr[expr_start] == ' ' || node->content.ptr[expr_start] == '\t')) {
+    expr_start++;
+  }
+  bufsize_t expr_end = line_end;
+  while (expr_end > expr_start &&
+         (node->content.ptr[expr_end - 1] == ' ' || node->content.ptr[expr_end - 1] == '\t' ||
+          node->content.ptr[expr_end - 1] == '\r')) {
+    expr_end--;
+  }
+
+  int value = 0;
+  if (!eval_if_expression(node->content.ptr + expr_start, expr_end - expr_start, &value) ||
+      !value) {
+    return 1;
+  }
+
+  bufsize_t body_start = line_end < node->content.size ? line_end + 1 : node->content.size;
+  if (body_start < node->content.size && node->content.ptr[body_start] == '\r') {
+    body_start++;
+  }
+
+  strbuf body;
+  strbuf_init(&body, node->content.size - body_start + 1);
+  if (body_start < node->content.size) {
+    strbuf_set(&body, node->content.ptr + body_start, node->content.size - body_start);
+  }
+  int ok = render_advanced_content(out, &body);
+  strbuf_free(&body);
+  return ok;
 }
 
 static int render_inline_node(FILE *out, const namumark_node *node) {
@@ -1367,8 +1497,8 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
                (node->content.ptr[start] == ' ' || node->content.ptr[start] == '\t')) {
           start++;
         }
-        return render_html_entity_or_text(out, node->content.ptr + start,
-                                          node->content.size - start);
+        return render_raw_bytes(out, node->content.ptr + start,
+                                node->content.size - start);
       }
       if (node->advanced_type == NAMUMARK_NODE_ADVANCED_WIKI) {
         return render_wiki_advanced_block(out, node);
@@ -1381,6 +1511,9 @@ static int render_inline_node(FILE *out, const namumark_node *node) {
       }
       if (node->advanced_type == NAMUMARK_NODE_ADVANCED_FOLDING) {
         return render_folding_advanced_block(out, node);
+      }
+      if (node->advanced_type == NAMUMARK_NODE_ADVANCED_IF) {
+        return render_if_advanced_block(out, node);
       }
       if (node->advanced_type == NAMUMARK_NODE_ADVANCED_SIZING ||
           node->advanced_type == NAMUMARK_NODE_ADVANCED_COLOR) {

@@ -607,6 +607,34 @@ static int text_node_starts_with_token(const namumark_node *node, const char *to
          memcmp(node->content.ptr + start, token, (size_t)token_len) == 0;
 }
 
+static int text_node_starts_with_any_token(const namumark_node *node, const char **tokens,
+                                           size_t token_count) {
+  for (size_t i = 0; i < token_count; i++) {
+    if (text_node_starts_with_token(node, tokens[i])) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int text_node_contains_token(const namumark_node *node, const char *token) {
+  if (node == NULL || token == NULL) {
+    return 0;
+  }
+
+  bufsize_t token_len = (bufsize_t)strlen(token);
+  if (token_len == 0 || node->content.size < token_len) {
+    return 0;
+  }
+
+  for (bufsize_t i = 0; i + token_len <= node->content.size; i++) {
+    if (memcmp(node->content.ptr + i, token, (size_t)token_len) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int is_line_only_advanced_end(const unsigned char *line, bufsize_t len) {
   /* Standalone }}} closes an advanced block without contributing content. */
   bufsize_t start = skip_spaces(line, len, 0);
@@ -699,6 +727,18 @@ static int wiki_fragment_declares_inline_display(const unsigned char *line, bufs
   bufsize_t value_len = 0;
   extract_wiki_block_attribute(line, len, "style", &value_start, &value_len);
   return style_value_has_inline_display(line + value_start, value_len);
+}
+
+static int wiki_fragment_has_class_attribute(const unsigned char *line, bufsize_t len) {
+  bufsize_t value_start = 0;
+  bufsize_t value_len = 0;
+  extract_wiki_block_attribute(line, len, "class", &value_start, &value_len);
+  for (bufsize_t i = 0; i < value_len; i++) {
+    if (line[value_start + i] != ' ' && line[value_start + i] != '\t') {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 static int wiki_attr_name_matches(const unsigned char *name, bufsize_t name_len,
@@ -1644,8 +1684,16 @@ void process_line(namumark_parser *parser) {
      * new block clearly begins.  This prevents an unclosed inline literal from
      * swallowing a following table or heading.
      */
+    static const char *block_tolerant_inline_advanced[] = {
+        "{{{#!folding",
+        "{{{#!style",
+    };
     if (line_looks_like_block_start(line, len) &&
-        !text_node_starts_with_token(parser->inline_text_node, "{{{#!folding")) {
+        !text_node_starts_with_any_token(parser->inline_text_node,
+                                         block_tolerant_inline_advanced,
+                                         sizeof(block_tolerant_inline_advanced) /
+                                             sizeof(block_tolerant_inline_advanced[0])) &&
+        !text_node_contains_token(parser->inline_text_node, "{{{#!style")) {
       parse_inlines(&parser->inline_text_node->content, parser->inline_text_node,
                     parser->line_number);
       parser->inline_advanced_depth = 0;
@@ -1954,7 +2002,8 @@ void process_line(namumark_parser *parser) {
 
   bufsize_t embedded_wiki_start = find_wiki_block_start_in_text(line, len);
   if (embedded_wiki_start > 0 &&
-      !wiki_fragment_declares_inline_display(line + embedded_wiki_start, len - embedded_wiki_start)) {
+      !wiki_fragment_declares_inline_display(line + embedded_wiki_start, len - embedded_wiki_start) &&
+      !wiki_fragment_has_class_attribute(line + embedded_wiki_start, len - embedded_wiki_start)) {
     namumark_node *prefix = append_block_text(parser, NAMUMARK_NODE_TEXT, line, embedded_wiki_start);
     if (prefix != NULL) {
       parse_inlines(&prefix->content, prefix, parser->line_number);
