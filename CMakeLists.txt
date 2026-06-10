@@ -48,16 +48,20 @@ target_include_directories(namumark-shared
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+if(MSVC)
+  set(NAMUMARK_WARNING_FLAGS /W4)
+else()
+  set(NAMUMARK_WARNING_FLAGS -Wall -Wextra)
+endif()
+
 target_compile_options(namumark-lib
   PRIVATE
-    -Wall
-    -Wextra
+    ${NAMUMARK_WARNING_FLAGS}
 )
 
 target_compile_options(namumark-shared
   PRIVATE
-    -Wall
-    -Wextra
+    ${NAMUMARK_WARNING_FLAGS}
 )
 
 add_executable(namumark

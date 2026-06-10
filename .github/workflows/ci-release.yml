@@ -1,0 +1,108 @@
+name: CI and Release
+
+on:
+  pull_request:
+  release:
+    types: [created, published]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
+
+  build:
+    name: Build ${{ matrix.artifact }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: namumark-windows-x86
+            os: windows-latest
+            cmake_arch: Win32
+            cmake_extra_args: ''
+            archive: namumark-windows-x86.zip
+          - artifact: namumark-windows-x86_64
+            os: windows-latest
+            cmake_arch: x64
+            cmake_extra_args: ''
+            archive: namumark-windows-x86_64.zip
+          - artifact: namumark-macos-universal
+            os: macos-latest
+            cmake_arch: ''
+            cmake_extra_args: '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"'
+            archive: namumark-macos-universal.tar.gz
+          - artifact: namumark-linux-x86
+            os: ubuntu-latest
+            cmake_arch: ''
+            cmake_extra_args: '-DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_EXE_LINKER_FLAGS=-m32 -DCMAKE_SHARED_LINKER_FLAGS=-m32'
+            archive: namumark-linux-x86.tar.gz
+          - artifact: namumark-linux-x86_64
+            os: ubuntu-latest
+            cmake_arch: ''
+            cmake_extra_args: ''
+            archive: namumark-linux-x86_64.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux x86 toolchain
+        if: matrix.artifact == 'namumark-linux-x86'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DNAMUMARK_BUILD_TESTING=OFF
+
+      - name: Configure Unix
+        if: runner.os != 'Windows'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNAMUMARK_BUILD_TESTING=OFF ${{ matrix.cmake_extra_args }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install
+        run: cmake --install build --config Release --prefix package/${{ matrix.artifact }}
+
+      - name: Archive Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path package/${{ matrix.artifact }}/* -DestinationPath ${{ matrix.archive }}
+
+      - name: Archive Unix package
+        if: runner.os != 'Windows'
+        run: tar -czf ${{ matrix.archive }} -C package ${{ matrix.artifact }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.archive }} --clobber
