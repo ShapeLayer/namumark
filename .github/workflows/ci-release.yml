@@ -39,27 +39,27 @@ jobs:
             os: windows-latest
             cmake_arch: Win32
             cmake_extra_args: ''
-            archive: namumark-windows-x86.zip
+            archive_ext: .zip
           - artifact: namumark-windows-x86_64
             os: windows-latest
             cmake_arch: x64
             cmake_extra_args: ''
-            archive: namumark-windows-x86_64.zip
+            archive_ext: .zip
           - artifact: namumark-macos-universal
             os: macos-latest
             cmake_arch: ''
             cmake_extra_args: '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"'
-            archive: namumark-macos-universal.tar.gz
+            archive_ext: .tar.gz
           - artifact: namumark-linux-x86
             os: ubuntu-latest
             cmake_arch: ''
             cmake_extra_args: '-DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_EXE_LINKER_FLAGS=-m32 -DCMAKE_SHARED_LINKER_FLAGS=-m32'
-            archive: namumark-linux-x86.tar.gz
+            archive_ext: .tar.gz
           - artifact: namumark-linux-x86_64
             os: ubuntu-latest
             cmake_arch: ''
             cmake_extra_args: ''
-            archive: namumark-linux-x86_64.tar.gz
+            archive_ext: .tar.gz
 
     steps:
       - name: Checkout
@@ -85,24 +85,34 @@ jobs:
       - name: Install
         run: cmake --install build --config Release --prefix package/${{ matrix.artifact }}
 
+      - name: Set archive name
+        id: archive
+        shell: pwsh
+        run: |
+          $archiveName = '${{ matrix.artifact }}'
+          if ('${{ github.event_name }}' -eq 'release') {
+            $archiveName = "$archiveName-${{ github.event.release.tag_name }}"
+          }
+          "path=$archiveName${{ matrix.archive_ext }}" >> $env:GITHUB_OUTPUT
+
       - name: Archive Windows package
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path package/${{ matrix.artifact }}/* -DestinationPath ${{ matrix.archive }}
+        run: Compress-Archive -Path package/${{ matrix.artifact }}/* -DestinationPath ${{ steps.archive.outputs.path }}
 
       - name: Archive Unix package
         if: runner.os != 'Windows'
-        run: tar -czf ${{ matrix.archive }} -C package ${{ matrix.artifact }}
+        run: tar -czf ${{ steps.archive.outputs.path }} -C package ${{ matrix.artifact }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.archive }}
+          path: ${{ steps.archive.outputs.path }}
           if-no-files-found: error
 
       - name: Upload release asset
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.archive }} --clobber
+        run: gh release upload ${{ github.event.release.tag_name }} ${{ steps.archive.outputs.path }} --clobber
