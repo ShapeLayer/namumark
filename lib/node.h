@@ -32,10 +32,22 @@ typedef struct namumark_node {
   /**
    * Source span metadata used by diagnostics and AST JSON.
    *
-   * Lines are 1-based. Columns are 1-based byte offsets within the source line
-   * (note: multibyte UTF-8 characters advance the column by their byte length).
-   * end_column points just past the node's last byte, so an empty span has
+   * Lines are 1-based. Columns are 1-based byte offsets within the physical
+   * source line (multibyte UTF-8 characters advance the column by their byte
+   * length; consumers map these to UTF-16/codepoint offsets as needed).
+   *
+   * Spans use a half-open convention: end_column is one column past the node's
+   * last byte, so width == end_column - start_column and an empty span has
    * end_column == start_column.
+   *
+   * Columns are absolute line coordinates for every node, including inline
+   * children nested inside emphasis, headings, list items, and blockquotes;
+   * they are not reset relative to a parent's content buffer.
+   *
+   * Exception: a node spanning multiple physical lines (a multiline inline
+   * advanced block) anchors start_column to its opening line; columns on
+   * continuation lines cannot be expressed with a single base, so consumers
+   * needing exact multiline spans should split that node's content on '\n'.
    */
   int start_line;
   int start_column;

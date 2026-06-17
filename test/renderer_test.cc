@@ -215,8 +215,18 @@ TEST(RendererTest, AstIncludesSourcePositions) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);
 
-  /* "굵게" is wrapped in ''' ''' starting at byte column 4 on line 1. */
-  const char *input = "'''굵게''' 일반\n";
+  /*
+   * ASCII case lets us assert exact columns. Columns are 1-based byte offsets
+   * following a half-open convention (end = one past the last byte, so
+   * width == end - start).
+   *
+   *   index:  1234567890123456
+   *   text:   ab '''CD''' ef
+   *   - "ab "         bytes 1..3   -> [1:1, 1:4)
+   *   - bold "CD"     bytes 7..8   -> [1:7, 1:9)   (after the opening ''')
+   *   - " ef"         bytes 12..14 -> [1:12, 1:15)
+   */
+  const char *input = "ab '''CD''' ef\n";
   parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
 
   namumark_node *doc = parser_finish(parser);
@@ -235,15 +245,65 @@ TEST(RendererTest, AstIncludesSourcePositions) {
 
   /* Every node must carry a position object with the four span fields. */
   EXPECT_NE(ast.find("\"position\": {"), std::string::npos);
-  EXPECT_NE(ast.find("\"start_line\":"), std::string::npos);
-  EXPECT_NE(ast.find("\"start_column\":"), std::string::npos);
-  EXPECT_NE(ast.find("\"end_line\":"), std::string::npos);
-  EXPECT_NE(ast.find("\"end_column\":"), std::string::npos);
 
-  /* The bold span begins just past the opening ''' (byte column 4). */
+  /* Leading text width matches its byte length (half-open). */
   EXPECT_NE(
       ast.find(
-          "\"position\": {\"start_line\": 1, \"start_column\": 4, \"end_line\": 1, \"end_column\": 9}"),
+          "\"position\": {\"start_line\": 1, \"start_column\": 1, \"end_line\": 1, \"end_column\": 4}"),
+      std::string::npos);
+
+  /* Bold span points exactly at "CD" (column 7), just past the opening '''. */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 7, \"end_line\": 1, \"end_column\": 9}"),
+      std::string::npos);
+
+  /* Trailing text after the closing ''' starts at absolute column 12. */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 12, \"end_line\": 1, \"end_column\": 15}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstChildSpansUseAbsoluteLineColumns) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * Regression: inline children inside emphasis and headings must keep absolute
+   * line columns instead of resetting to 1.
+   *   bold "CD" at [1:7, 1:9) contains text "CD" at the SAME [1:7, 1:9).
+   *   heading title "Hi" begins after "= " at column 3 -> text "Hi" [2:3, 2:5).
+   */
+  const char *input = "ab '''CD''' ef\n= Hi =\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  /* Nested text under bold keeps the absolute span, not [1:1, 1:x). */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 7, \"end_line\": 1, \"end_column\": 9}"),
+      std::string::npos);
+
+  /* Heading inline text uses the title's absolute start column (3), not 1. */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 2, \"start_column\": 3, \"end_line\": 2, \"end_column\": 5}"),
       std::string::npos);
 
   namumark_node_free(doc);

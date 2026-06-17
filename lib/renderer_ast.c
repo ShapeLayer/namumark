@@ -137,8 +137,10 @@ static int print_node_json(const namumark_node *node, FILE *out, int depth) {
   }
 
   /* Source span metadata: lines are 1-based; columns are 1-based byte offsets
-   * within the source line. end_column marks the position just past the node's
-   * last byte, so it equals start_column for an empty span. */
+   * within the physical line, in absolute line coordinates (children are not
+   * reset relative to a parent). Half-open: end_column is one past the node's
+   * last byte, so width == end_column - start_column. See node.h for the
+   * multiline exception. */
   if (!print_indent(out, depth + 1) || fputs("\"position\": {", out) < 0) {
     return 0;
   }

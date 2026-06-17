@@ -21,7 +21,7 @@ TEST(InlilnesTest, AdvancedLiteralSupportsNestedBraces) {
   namumark_node *parent = namumark_node_new(NAMUMARK_NODE_TEXT, 1, 1);
   ASSERT_NE(parent, nullptr);
 
-  parse_inlines(&src, parent, 1);
+  parse_inlines(&src, parent, 1, 1);
 
   ASSERT_NE(parent->first_child, nullptr);
   EXPECT_EQ(parent->first_child->type, NAMUMARK_NODE_ADVANCED);
@@ -40,7 +40,7 @@ TEST(InlilnesTest, UnderlineContainsNestedAdvancedColor) {
   namumark_node *parent = namumark_node_new(NAMUMARK_NODE_TEXT, 1, 1);
   ASSERT_NE(parent, nullptr);
 
-  parse_inlines(&src, parent, 1);
+  parse_inlines(&src, parent, 1, 1);
 
   ASSERT_NE(parent->first_child, nullptr);
   ASSERT_EQ(parent->first_child->type, NAMUMARK_NODE_UNDERLINE);
@@ -60,7 +60,7 @@ TEST(InlilnesTest, ColorAdvancedAcceptsHexAndAlias) {
 
     namumark_node *parent = namumark_node_new(NAMUMARK_NODE_TEXT, 1, 1);
     EXPECT_NE(parent, nullptr);
-    parse_inlines(&src, parent, 1);
+    parse_inlines(&src, parent, 1, 1);
 
     const namumark_node *n = parent->first_child;
     EXPECT_NE(n, nullptr);
