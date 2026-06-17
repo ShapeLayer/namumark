@@ -211,6 +211,45 @@ TEST(RendererTest, AstIsProduced) {
   parser_free(parser);
 }
 
+TEST(RendererTest, AstIncludesSourcePositions) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /* "굵게" is wrapped in ''' ''' starting at byte column 4 on line 1. */
+  const char *input = "'''굵게''' 일반\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  /* Every node must carry a position object with the four span fields. */
+  EXPECT_NE(ast.find("\"position\": {"), std::string::npos);
+  EXPECT_NE(ast.find("\"start_line\":"), std::string::npos);
+  EXPECT_NE(ast.find("\"start_column\":"), std::string::npos);
+  EXPECT_NE(ast.find("\"end_line\":"), std::string::npos);
+  EXPECT_NE(ast.find("\"end_column\":"), std::string::npos);
+
+  /* The bold span begins just past the opening ''' (byte column 4). */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 4, \"end_line\": 1, \"end_column\": 9}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, AstIncludesDocumentCategories) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

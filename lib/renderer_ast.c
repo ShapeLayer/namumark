@@ -136,6 +136,20 @@ static int print_node_json(const namumark_node *node, FILE *out, int depth) {
     return 0;
   }
 
+  /* Source span metadata: lines are 1-based; columns are 1-based byte offsets
+   * within the source line. end_column marks the position just past the node's
+   * last byte, so it equals start_column for an empty span. */
+  if (!print_indent(out, depth + 1) || fputs("\"position\": {", out) < 0) {
+    return 0;
+  }
+  if (fprintf(out, "\"start_line\": %d, \"start_column\": %d, \"end_line\": %d, \"end_column\": %d",
+              node->start_line, node->start_column, node->end_line, node->end_column) < 0) {
+    return 0;
+  }
+  if (fputs("},\n", out) < 0) {
+    return 0;
+  }
+
   if (!print_indent(out, depth + 1) || fputs("\"content\": ", out) < 0 ||
       !print_quoted(out, &node->content) || fputs(",\n", out) < 0) {
     return 0;

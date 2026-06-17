@@ -29,7 +29,14 @@ typedef struct namumark_node {
   struct namumark_node *last_child;
   namumark_node_type type;
 
-  /** Source span metadata used by diagnostics and AST JSON. */
+  /**
+   * Source span metadata used by diagnostics and AST JSON.
+   *
+   * Lines are 1-based. Columns are 1-based byte offsets within the source line
+   * (note: multibyte UTF-8 characters advance the column by their byte length).
+   * end_column points just past the node's last byte, so an empty span has
+   * end_column == start_column.
+   */
   int start_line;
   int start_column;
   int end_line;
