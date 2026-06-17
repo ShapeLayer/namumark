@@ -304,38 +304,60 @@ static bufsize_t find_advanced_close(const strbuf *source, bufsize_t open_pos) {
 }
 
 static void append_text_segment(const strbuf *source, bufsize_t start, bufsize_t len,
-                                namumark_node *parent, int line_number) {
+                                namumark_node *parent, int line_number, int base_column) {
   /* Preserve plain text as explicit nodes so AST JSON can show parser splits. */
   if (source == NULL || parent == NULL || len <= 0) {
     return;
   }
 
-  namumark_node *text = namumark_node_new(NAMUMARK_NODE_TEXT, line_number, (int)start + 1);
+  /* Absolute 1-based line column of the first byte; half-open end. */
+  int start_column = base_column + (int)start;
+  namumark_node *text = namumark_node_new(NAMUMARK_NODE_TEXT, line_number, start_column);
   if (text == NULL) {
     return;
   }
 
   strbuf_set(&text->content, source->ptr + start, len);
   text->end_line = line_number;
-  text->end_column = (int)(start + len);
+  text->end_column = start_column + (int)len;
   text->flags = (namumark_node_internal_flags)0;
   namumark_node_append_child(parent, text);
 }
 
 static void append_node_from_range(namumark_node_type node_type, const strbuf *source,
                                    bufsize_t start, bufsize_t len,
-                                   namumark_node *parent, int line_number) {
+                                   namumark_node *parent, int line_number, int base_column) {
   /* Helper for syntax spans whose raw body still needs subtype parsing. */
-  namumark_node *node = namumark_node_new(node_type, line_number, (int)start + 1);
+  int start_column = base_column + (int)start;
+  namumark_node *node = namumark_node_new(node_type, line_number, start_column);
   if (node == NULL) {
     return;
   }
 
   strbuf_set(&node->content, source->ptr + start, len);
   node->end_line = line_number;
-  node->end_column = (int)(start + len);
+  node->end_column = start_column + (int)len;
   node->flags = (namumark_node_internal_flags)0;
   namumark_node_append_child(parent, node);
+}
+
+/**
+ * @brief Like append_node_from_range, but also records the outer (delimiter-
+ * inclusive) span. outer_start/outer_end are byte offsets into source covering
+ * the whole token including its markup punctuation.
+ */
+static void append_delimited_node(namumark_node_type node_type, const strbuf *source,
+                                  bufsize_t start, bufsize_t len,
+                                  bufsize_t outer_start, bufsize_t outer_end,
+                                  namumark_node *parent, int line_number, int base_column) {
+  append_node_from_range(node_type, source, start, len, parent, line_number, base_column);
+  if (parent->last_child != NULL) {
+    namumark_node *node = parent->last_child;
+    node->outer_span.start_line = line_number;
+    node->outer_span.start_column = base_column + (int)outer_start;
+    node->outer_span.end_line = line_number;
+    node->outer_span.end_column = base_column + (int)outer_end;
+  }
 }
 
 static void parse_last_child_inlines(namumark_node *parent, int line_number) {
@@ -345,7 +367,12 @@ static void parse_last_child_inlines(namumark_node *parent, int line_number) {
   }
 
   namumark_node *node = parent->last_child;
-  parse_inlines(&node->content, node, line_number);
+  /*
+   * The child's content was sliced starting at node->start_column (absolute,
+   * 1-based), so nested inline spans must continue from that same base to stay
+   * in absolute line coordinates instead of resetting to 1.
+   */
+  parse_inlines(&node->content, node, line_number, node->start_column);
 }
 
 static void unescape_link_text(strbuf *out, const unsigned char *text, bufsize_t len) {
@@ -413,6 +440,47 @@ static void normalize_link_target(strbuf *target, strbuf *display) {
 
   strbuf_set(target, normalized.ptr, normalized.size);
   strbuf_free(&normalized);
+}
+
+static void record_link_component_spans(namumark_node *node, const strbuf *source,
+                                        bufsize_t inner_start, bufsize_t inner_end,
+                                        int base_column, int line_number) {
+  /*
+   * Record absolute source spans for the target and (optional) label halves of
+   * [[target|label]], splitting on the first unescaped-irrelevant '|' exactly as
+   * parse_link_target does. These describe raw source positions (including any
+   * surrounding spelling like "파일:"), not the normalized target text, so a
+   * highlighting client can color the two halves and the '|' separator.
+   */
+  if (node == NULL || source == NULL || inner_end <= inner_start) {
+    return;
+  }
+
+  bufsize_t sep = -1;
+  for (bufsize_t k = inner_start; k < inner_end; k++) {
+    if (source->ptr[k] == '|') {
+      sep = k;
+      break;
+    }
+  }
+
+  bufsize_t target_end = (sep < 0) ? inner_end : sep;
+  node->target_span.start_line = line_number;
+  node->target_span.start_column = base_column + (int)inner_start;
+  node->target_span.end_line = line_number;
+  node->target_span.end_column = base_column + (int)target_end;
+
+  /*
+   * Use a strict '<' so an empty label like [[T|]] records no label_span,
+   * matching parse_link_target which only populates args when text follows the
+   * separator. This keeps the emitted spans consistent with the parsed model.
+   */
+  if (sep >= 0 && sep + 1 < inner_end) {
+    node->label_span.start_line = line_number;
+    node->label_span.start_column = base_column + (int)(sep + 1);
+    node->label_span.end_line = line_number;
+    node->label_span.end_column = base_column + (int)inner_end;
+  }
 }
 
 static void parse_link_target(namumark_node *node) {
@@ -585,6 +653,59 @@ static void parse_advanced_content(namumark_node *node) {
   node->advanced_type = NAMUMARK_NODE_ADVANCED_LITERAL;
 }
 
+static bool starts_with_url_scheme(const strbuf *source, bufsize_t pos) {
+  /* Single-bracket external links require an explicit http/https/ftp scheme. */
+  return starts_with_at(source, pos, "https://") || starts_with_at(source, pos, "http://") ||
+         starts_with_at(source, pos, "ftp://");
+}
+
+/**
+ * @brief Recognize a single-bracket external link of the form [url label].
+ *
+ * The URL runs from just after '[' up to the first space/tab (or the closing
+ * ']'); an optional label follows after one or more spaces. On success, *close
+ * is the byte offset of the matching ']', *url_end is the byte offset just past
+ * the URL, and *label_start is the byte offset of the first label byte (equal
+ * to *close when there is no label).
+ */
+static bool find_external_link(const strbuf *source, bufsize_t open_bracket, bufsize_t *close,
+                               bufsize_t *url_end, bufsize_t *label_start) {
+  if (source == NULL || close == NULL || url_end == NULL || label_start == NULL) {
+    return false;
+  }
+  if (!starts_with_url_scheme(source, open_bracket + 1)) {
+    return false;
+  }
+
+  bufsize_t i = open_bracket + 1;
+  while (i < source->size && source->ptr[i] != ']' && source->ptr[i] != ' ' &&
+         source->ptr[i] != '\t' && source->ptr[i] != '\n' && source->ptr[i] != '\r') {
+    i++;
+  }
+  if (i >= source->size || i == open_bracket + 1) {
+    return false; /* unterminated, or empty URL */
+  }
+
+  *url_end = i;
+
+  /* Skip the separating whitespace between the URL and an optional label. */
+  while (i < source->size && (source->ptr[i] == ' ' || source->ptr[i] == '\t')) {
+    i++;
+  }
+  *label_start = i;
+
+  while (i < source->size && source->ptr[i] != ']' && source->ptr[i] != '\n' &&
+         source->ptr[i] != '\r') {
+    i++;
+  }
+  if (i >= source->size || source->ptr[i] != ']') {
+    return false;
+  }
+
+  *close = i;
+  return true;
+}
+
 static bool find_macro_close(const strbuf *source, bufsize_t open_bracket, bufsize_t *close_out) {
   /*
    * Macro recognition is intentionally broad; unknown macros are rendered back
@@ -638,11 +759,14 @@ static bool find_macro_close(const strbuf *source, bufsize_t open_bracket, bufsi
   return false;
 }
 
-void parse_inlines(const strbuf *source, namumark_node *parent, int line_number) {
+void parse_inlines(const strbuf *source, namumark_node *parent, int line_number, int base_column) {
   /*
    * The scan is single-pass and appends plain text before each recognized span.
    * Ordering matters: footnotes and links must be tested before generic macros,
    * and escapes must be consumed before any delimiter checks.
+   *
+   * base_column is the absolute 1-based line column of source[0]; every emitted
+   * span is reported in absolute line coordinates via base_column + byte offset.
    */
   if (source == NULL || parent == NULL) {
     return;
@@ -654,8 +778,8 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
   while (i < source->size) {
     /* Backslash escapes punctuation before any delimiter can claim it. */
     if (source->ptr[i] == '\\' && i + 1 < source->size && ispunct((unsigned char)source->ptr[i + 1])) {
-      append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-      append_text_segment(source, i + 1, 1, parent, line_number);
+      append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+      append_text_segment(source, i + 1, 1, parent, line_number, base_column);
       i += 2;
       plain_start = i;
       continue;
@@ -665,9 +789,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "{{{")) {
       bufsize_t close = find_advanced_close(source, i);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_ADVANCED, source, i + 3, close - (i + 3), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_ADVANCED, source, i + 3, close - (i + 3), i, close + 3,
+                              parent, line_number, base_column);
         if (parent->last_child != NULL && parent->last_child->type == NAMUMARK_NODE_ADVANCED) {
           parse_advanced_content(parent->last_child);
         }
@@ -679,9 +803,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
 
     /* A line-start ## is a real comment; indented ## is handled as visible text. */
     if (i == 0 && starts_with_at(source, i, "##")) {
-      append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-      append_node_from_range(NAMUMARK_NODE_COMMENT, source, i + 2, source->size - (i + 2),
-                             parent, line_number);
+      append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+      append_delimited_node(NAMUMARK_NODE_COMMENT, source, i + 2, source->size - (i + 2),
+                            i, source->size, parent, line_number, base_column);
       if (parent->last_child != NULL && parent->last_child->type == NAMUMARK_NODE_COMMENT &&
           source->size >= i + 3 && source->ptr[i + 2] == '@') {
         parent->last_child->fixed_comment = 1;
@@ -694,10 +818,13 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "[[")) {
       bufsize_t close = find_link_close(source, i);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_LINK, source, i + 2, close - (i + 2), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_LINK, source, i + 2, close - (i + 2), i, close + 2,
+                              parent, line_number, base_column);
         if (parent->last_child != NULL && parent->last_child->type == NAMUMARK_NODE_LINK) {
+          /* Split target|label spans within the inner content [i+2, close). */
+          record_link_component_spans(parent->last_child, source, i + 2, close, base_column,
+                                      line_number);
           parse_link_target(parent->last_child);
         }
         i = close + 2;
@@ -710,9 +837,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "[*")) {
       bufsize_t close = find_footnote_close(source, i);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_FOOTNOTE_REFERENCE, source, i + 2,
-                               close - (i + 2), parent, line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_FOOTNOTE_REFERENCE, source, i + 2, close - (i + 2),
+                              i, close + 1, parent, line_number, base_column);
         i = close + 1;
         plain_start = i;
         continue;
@@ -723,9 +850,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "<math>")) {
       bufsize_t close = find_token(source, "</math>", i + 6);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
         append_node_from_range(NAMUMARK_NODE_MACRO, source, i, (close + 7) - i, parent,
-                               line_number);
+                               line_number, base_column);
         if (parent->last_child != NULL && parent->last_child->type == NAMUMARK_NODE_MACRO) {
           strbuf_set(&parent->last_child->target, (const unsigned char *)"math", 4);
           strbuf_set(&parent->last_child->args, source->ptr + i + 6, close - (i + 6));
@@ -737,13 +864,53 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
       }
     }
 
+    /*
+     * Single-bracket external links [url label] are recognized before generic
+     * macros so the embedded URL's space-separated label is not mistaken for an
+     * unterminated macro and left as plain text.
+     */
+    if (source->ptr[i] == '[') {
+      bufsize_t close = -1;
+      bufsize_t url_end = 0;
+      bufsize_t label_start = 0;
+      if (find_external_link(source, i, &close, &url_end, &label_start)) {
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        /* Inner content is the full "url label" between the brackets. */
+        append_delimited_node(NAMUMARK_NODE_LINK, source, i + 1, close - (i + 1), i, close + 1,
+                              parent, line_number, base_column);
+        namumark_node *link = parent->last_child;
+        if (link != NULL && link->type == NAMUMARK_NODE_LINK) {
+          link->link_type = NAMUMARK_LINK_EXTERNAL;
+          strbuf_set(&link->target, source->ptr + i + 1, url_end - (i + 1));
+          if (label_start < close) {
+            strbuf_set(&link->args, source->ptr + label_start, close - label_start);
+          }
+
+          /* Absolute spans for the URL and the optional label. */
+          link->target_span.start_line = line_number;
+          link->target_span.start_column = base_column + (int)(i + 1);
+          link->target_span.end_line = line_number;
+          link->target_span.end_column = base_column + (int)url_end;
+          if (label_start < close) {
+            link->label_span.start_line = line_number;
+            link->label_span.start_column = base_column + (int)label_start;
+            link->label_span.end_line = line_number;
+            link->label_span.end_column = base_column + (int)close;
+          }
+        }
+        i = close + 1;
+        plain_start = i;
+        continue;
+      }
+    }
+
     /* Generic bracket macros are parsed after all more specific bracket forms. */
     if (source->ptr[i] == '[') {
       bufsize_t close = -1;
       if (find_macro_close(source, i, &close)) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_MACRO, source, i + 1, close - (i + 1), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_MACRO, source, i + 1, close - (i + 1), i, close + 1,
+                              parent, line_number, base_column);
         if (parent->last_child != NULL && parent->last_child->type == NAMUMARK_NODE_MACRO) {
           parse_macro_content(parent->last_child);
         }
@@ -757,9 +924,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "'''")) {
       bufsize_t close = find_token(source, "'''", i + 3);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_BOLD, source, i + 3, close - (i + 3), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_BOLD, source, i + 3, close - (i + 3), i, close + 3,
+                              parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 3;
         plain_start = i;
@@ -771,9 +938,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "''")) {
       bufsize_t close = find_token(source, "''", i + 2);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_ITALIC, source, i + 2, close - (i + 2), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_ITALIC, source, i + 2, close - (i + 2), i, close + 2,
+                              parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 2;
         plain_start = i;
@@ -785,9 +952,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "__")) {
       bufsize_t close = find_token(source, "__", i + 2);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_UNDERLINE, source, i + 2, close - (i + 2), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_UNDERLINE, source, i + 2, close - (i + 2), i, close + 2,
+                              parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 2;
         plain_start = i;
@@ -799,9 +966,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "~~")) {
       bufsize_t close = find_token(source, "~~", i + 2);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_STRIKETHROUGH, source, i + 2, close - (i + 2),
-                               parent, line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_STRIKETHROUGH, source, i + 2, close - (i + 2), i,
+                              close + 2, parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 2;
         plain_start = i;
@@ -813,9 +980,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "--")) {
       bufsize_t close = find_token(source, "--", i + 2);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_STRIKETHROUGH, source, i + 2, close - (i + 2),
-                               parent, line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_STRIKETHROUGH, source, i + 2, close - (i + 2), i,
+                              close + 2, parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 2;
         plain_start = i;
@@ -827,9 +994,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, "^^")) {
       bufsize_t close = find_token(source, "^^", i + 2);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_SUPERSCRIPT, source, i + 2, close - (i + 2),
-                               parent, line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_SUPERSCRIPT, source, i + 2, close - (i + 2), i,
+                              close + 2, parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 2;
         plain_start = i;
@@ -841,9 +1008,9 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     if (starts_with_at(source, i, ",,")) {
       bufsize_t close = find_token(source, ",,", i + 2);
       if (close >= 0) {
-        append_text_segment(source, plain_start, i - plain_start, parent, line_number);
-        append_node_from_range(NAMUMARK_NODE_SUBSCRIPT, source, i + 2, close - (i + 2), parent,
-                               line_number);
+        append_text_segment(source, plain_start, i - plain_start, parent, line_number, base_column);
+        append_delimited_node(NAMUMARK_NODE_SUBSCRIPT, source, i + 2, close - (i + 2), i,
+                              close + 2, parent, line_number, base_column);
         parse_last_child_inlines(parent, line_number);
         i = close + 2;
         plain_start = i;
@@ -854,5 +1021,5 @@ void parse_inlines(const strbuf *source, namumark_node *parent, int line_number)
     i++;
   }
 
-  append_text_segment(source, plain_start, source->size - plain_start, parent, line_number);
+  append_text_segment(source, plain_start, source->size - plain_start, parent, line_number, base_column);
 }

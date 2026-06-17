@@ -68,7 +68,8 @@ static namumark_node *append_block_text(namumark_parser *parser, namumark_node_t
   }
 
   node->end_line = parser->line_number;
-  node->end_column = (int)len;
+  /* Half-open: column just past the last content byte (start_column is 1). */
+  node->end_column = (int)len + 1;
   node->flags = (namumark_node_internal_flags)0;
   namumark_node_append_child(parser->root, node);
 
@@ -1195,7 +1196,7 @@ static void open_wiki_block_from_fragment(namumark_parser *parser, const unsigne
                                           bufsize_t len);
 
 static void append_text_tail_as_block(namumark_parser *parser, const unsigned char *line,
-                                      bufsize_t len) {
+                                      bufsize_t len, bufsize_t base_offset) {
   /* Tail text after a same-line close is parsed immediately as its own block. */
   if (parser == NULL || line == NULL || len <= 0) {
     return;
@@ -1203,13 +1204,25 @@ static void append_text_tail_as_block(namumark_parser *parser, const unsigned ch
 
   namumark_node *text = append_block_text(parser, NAMUMARK_NODE_TEXT, line, len);
   if (text != NULL) {
-    parse_inlines(&text->content, text, parser->line_number);
+    /*
+     * `line` points `base_offset` bytes into the physical line, so record the
+     * node's absolute start column and parse inline spans from that same base.
+     */
+    int start_column = (int)base_offset + 1;
+    text->start_column = start_column;
+    text->end_column = start_column + (int)len;
+    parse_inlines(&text->content, text, parser->line_number, start_column);
   }
 }
 
 static void process_advanced_close_tail(namumark_parser *parser, const unsigned char *tail_line,
-                                        bufsize_t tail_len, bufsize_t line_len) {
-  /* Dispatch the text that follows a }}} close on the same physical line. */
+                                        bufsize_t tail_len, bufsize_t line_len,
+                                        bufsize_t tail_offset) {
+  /*
+   * Dispatch the text that follows a }}} close on the same physical line.
+   * tail_offset is the byte offset of tail_line within the physical line, used
+   * to report absolute source columns for the dispatched tail content.
+   */
   if (parser == NULL || tail_line == NULL || tail_len <= 0) {
     return;
   }
@@ -1223,7 +1236,8 @@ static void process_advanced_close_tail(namumark_parser *parser, const unsigned 
     namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
     if (pre != NULL) {
       pre->end_line = parser->line_number;
-      pre->end_column = (int)line_len;
+      /* Half-open: column just past the last byte of the physical line. */
+      pre->end_column = (int)line_len + 1;
 
       bufsize_t start_idx = skip_spaces(tail_line, tail_len, 0) + 3;
       if (start_idx < tail_len) {
@@ -1267,7 +1281,7 @@ static void process_advanced_close_tail(namumark_parser *parser, const unsigned 
     return;
   }
 
-  append_text_tail_as_block(parser, tail_line, tail_len);
+  append_text_tail_as_block(parser, tail_line, tail_len, tail_offset);
 }
 
 static bufsize_t find_advanced_close_on_line(const unsigned char *line, bufsize_t len,
@@ -1427,7 +1441,8 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->wiki_block_node->end_line = parser->line_number;
-      parser->wiki_block_node->end_column = (int)reopen_content_end;
+      /* Half-open: content occupies bytes [0, reopen_content_end). */
+      parser->wiki_block_node->end_column = (int)reopen_content_end + 1;
       parser->wiki_block_depth = 0;
       parser->wiki_nonwiki_depth = 0;
       parser->wiki_block_node = NULL;
@@ -1451,12 +1466,13 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->wiki_block_node->end_line = parser->line_number;
-      parser->wiki_block_node->end_column = (int)tail_content_end;
+      /* Half-open: content occupies bytes [0, tail_content_end). */
+      parser->wiki_block_node->end_column = (int)tail_content_end + 1;
       parser->wiki_block_depth = 0;
       parser->wiki_nonwiki_depth = 0;
       parser->wiki_block_node = NULL;
 
-      process_advanced_close_tail(parser, line + tail_start, len - tail_start, len);
+      process_advanced_close_tail(parser, line + tail_start, len - tail_start, len, tail_start);
       strbuf_clear(&parser->current_line);
       return;
     }
@@ -1471,7 +1487,7 @@ void process_line(namumark_parser *parser) {
 
       if (after < len && starts_with_wiki_token_at(line, len, after)) {
         parser->wiki_block_node->end_line = parser->line_number;
-        parser->wiki_block_node->end_column = (int)len;
+        parser->wiki_block_node->end_column = (int)len + 1;
 
         namumark_node *next_wiki = append_block_text(parser, NAMUMARK_NODE_WIKI_BLOCK, NULL, 0);
         if (next_wiki != NULL) {
@@ -1584,7 +1600,7 @@ void process_line(namumark_parser *parser) {
     }
 
     parser->wiki_block_node->end_line = parser->line_number;
-    parser->wiki_block_node->end_column = (int)len;
+    parser->wiki_block_node->end_column = (int)len + 1;
 
     parser->wiki_block_depth = projected_depth;
     if (parser->wiki_block_depth <= 0) {
@@ -1613,14 +1629,14 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->advanced_text_node->end_line = parser->line_number;
-      parser->advanced_text_node->end_column = (int)len;
+      parser->advanced_text_node->end_column = (int)len + 1;
       parser->advanced_brace_depth = 0;
       parser->advanced_text_node = NULL;
 
       if (tail < len) {
         const unsigned char *tail_line = line + tail;
         bufsize_t tail_len = len - tail;
-        process_advanced_close_tail(parser, tail_line, tail_len, len);
+        process_advanced_close_tail(parser, tail_line, tail_len, len, tail);
       }
 
       strbuf_clear(&parser->current_line);
@@ -1641,7 +1657,7 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->advanced_text_node->end_line = parser->line_number;
-      parser->advanced_text_node->end_column = (int)len;
+      parser->advanced_text_node->end_column = (int)len + 1;
       parser->advanced_brace_depth = 0;
       parser->advanced_text_node = NULL;
 
@@ -1650,7 +1666,7 @@ void process_line(namumark_parser *parser) {
         tail++;
       }
       if (tail < len) {
-        process_advanced_close_tail(parser, line + tail, len - tail, len);
+        process_advanced_close_tail(parser, line + tail, len - tail, len, tail);
       }
 
       strbuf_clear(&parser->current_line);
@@ -1664,7 +1680,7 @@ void process_line(namumark_parser *parser) {
       strbuf_put(&parser->advanced_text_node->content, line, len);
     }
     parser->advanced_text_node->end_line = parser->line_number;
-    parser->advanced_text_node->end_column = (int)len;
+    parser->advanced_text_node->end_column = (int)len + 1;
 
     parser->advanced_brace_depth += count_token(line, len, "{{{", 3);
     parser->advanced_brace_depth -= count_token(line, len, "}}}", 3);
@@ -1694,8 +1710,15 @@ void process_line(namumark_parser *parser) {
                                          sizeof(block_tolerant_inline_advanced) /
                                              sizeof(block_tolerant_inline_advanced[0])) &&
         !text_node_contains_token(parser->inline_text_node, "{{{#!style")) {
+      /*
+       * Multiline content: base_column tracks only the opening line's start
+       * column (recorded on the node). Spans on later physical lines cannot be
+       * expressed with a single base, so first-line coordinates are accurate
+       * while continuation-line columns remain relative to the accumulated
+       * buffer; consumers needing exact multiline spans should split on '\n'.
+       */
       parse_inlines(&parser->inline_text_node->content, parser->inline_text_node,
-                    parser->line_number);
+                    parser->line_number, parser->inline_text_node->start_column);
       parser->inline_advanced_depth = 0;
       parser->inline_text_node = NULL;
     } else {
@@ -1704,13 +1727,14 @@ void process_line(namumark_parser *parser) {
       }
       strbuf_put(&parser->inline_text_node->content, line, len);
       parser->inline_text_node->end_line = parser->line_number;
-      parser->inline_text_node->end_column = (int)len;
+      /* Half-open: column just past the last byte of the final physical line. */
+      parser->inline_text_node->end_column = (int)len + 1;
 
       parser->inline_advanced_depth += count_token(line, len, "{{{", 3);
       parser->inline_advanced_depth -= count_token(line, len, "}}}", 3);
       if (parser->inline_advanced_depth <= 0) {
         parse_inlines(&parser->inline_text_node->content, parser->inline_text_node,
-                      parser->line_number);
+                      parser->line_number, parser->inline_text_node->start_column);
         parser->inline_advanced_depth = 0;
         parser->inline_text_node = NULL;
       }
@@ -1729,7 +1753,7 @@ void process_line(namumark_parser *parser) {
     strbuf_putc(&table->content, '\n');
     strbuf_put(&table->content, line, len);
     table->end_line = parser->line_number;
-    table->end_column = (int)len;
+    table->end_column = (int)len + 1;
     parser->table_continuation = false;
     parser->table_wiki_block_depth = 0;
     parser->table_wiki_nonwiki_depth = 0;
@@ -1747,7 +1771,7 @@ void process_line(namumark_parser *parser) {
     strbuf_putc(&table->content, '\n');
     strbuf_put(&table->content, line, len);
     table->end_line = parser->line_number;
-    table->end_column = (int)len;
+    table->end_column = (int)len + 1;
 
     update_table_wiki_depth(parser, line, len);
     if (parser->table_wiki_block_depth <= 0 && parser->table_wiki_nonwiki_depth <= 0 &&
@@ -1800,7 +1824,7 @@ void process_line(namumark_parser *parser) {
     namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
     if (pre != NULL) {
       pre->end_line = parser->line_number;
-      pre->end_column = (int)len;
+      pre->end_column = (int)len + 1;
 
       bufsize_t start_idx = skip_spaces(line, len, 0) + 3;
       if (start_idx < len) {
@@ -1863,7 +1887,9 @@ void process_line(namumark_parser *parser) {
       strbuf title;
       strbuf_init(&title, end - start + 1);
       strbuf_put(&title, line + start, end - start);
-      parse_inlines(&title, heading, parser->line_number);
+      /* Title begins at byte offset `start`; report inline spans as absolute
+       * line columns (1-based) so the heading text is not reported at column 1. */
+      parse_inlines(&title, heading, parser->line_number, (int)start + 1);
       strbuf_free(&title);
     }
     strbuf_clear(&parser->current_line);
@@ -1880,7 +1906,8 @@ void process_line(namumark_parser *parser) {
       strbuf body;
       strbuf_init(&body, len - start + 1);
       strbuf_put(&body, line + start, len - start);
-      parse_inlines(&body, quote, parser->line_number);
+      /* Body begins after the `>` markers at byte offset `start`. */
+      parse_inlines(&body, quote, parser->line_number, (int)start + 1);
       strbuf_free(&body);
     }
     strbuf_clear(&parser->current_line);
@@ -1897,11 +1924,15 @@ void process_line(namumark_parser *parser) {
       list->list_marker = marker_type;
       list->start_number = start_number;
 
-      namumark_node *item = namumark_node_new(NAMUMARK_NODE_LIST_ITEM, parser->line_number, 1);
+      /* Item content starts at byte offset `start`; record it as the node's
+       * absolute 1-based start column so both the immediate and deferred
+       * (multiline) inline parses share the same base coordinate. */
+      namumark_node *item =
+          namumark_node_new(NAMUMARK_NODE_LIST_ITEM, parser->line_number, (int)start + 1);
       if (item != NULL) {
         item->flags = (namumark_node_internal_flags)0;
         item->end_line = parser->line_number;
-        item->end_column = (int)len;
+        item->end_column = (int)start + 1 + (int)(len - start);
         item->indent = indent_level;
         item->list_marker = marker_type;
         item->start_number = start_number;
@@ -1918,7 +1949,7 @@ void process_line(namumark_parser *parser) {
           parser->inline_advanced_depth = opens - closes;
           parser->inline_text_node = item;
         } else {
-          parse_inlines(&body, item, parser->line_number);
+          parse_inlines(&body, item, parser->line_number, item->start_column);
         }
         strbuf_free(&body);
       }
@@ -1942,7 +1973,8 @@ void process_line(namumark_parser *parser) {
       strbuf body;
       strbuf_init(&body, text_end - text_start + 1);
       strbuf_put(&body, line + text_start, text_end - text_start);
-      parse_inlines(&body, footnote, parser->line_number);
+      /* Footnote body begins at byte offset `text_start` within the line. */
+      parse_inlines(&body, footnote, parser->line_number, (int)text_start + 1);
       strbuf_free(&body);
     }
     strbuf_clear(&parser->current_line);
@@ -1961,7 +1993,7 @@ void process_line(namumark_parser *parser) {
       strbuf_putc(&table->content, '\n');
       strbuf_put(&table->content, line, len);
       table->end_line = parser->line_number;
-      table->end_column = (int)len;
+      table->end_column = (int)len + 1;
       parser->table_wiki_block_depth = 0;
       parser->table_wiki_nonwiki_depth = 0;
 
@@ -1985,7 +2017,7 @@ void process_line(namumark_parser *parser) {
       strbuf_putc(&table->content, '\n');
       strbuf_put(&table->content, line, len);
       table->end_line = parser->line_number;
-      table->end_column = (int)len;
+      table->end_column = (int)len + 1;
     } else {
       table = append_block_text(parser, NAMUMARK_NODE_TABLE, line, len);
     }
@@ -2006,7 +2038,8 @@ void process_line(namumark_parser *parser) {
       !wiki_fragment_has_class_attribute(line + embedded_wiki_start, len - embedded_wiki_start)) {
     namumark_node *prefix = append_block_text(parser, NAMUMARK_NODE_TEXT, line, embedded_wiki_start);
     if (prefix != NULL) {
-      parse_inlines(&prefix->content, prefix, parser->line_number);
+      /* Prefix text starts at the line's first byte (column 1). */
+      parse_inlines(&prefix->content, prefix, parser->line_number, 1);
     }
     open_wiki_block_from_fragment(parser, line + embedded_wiki_start, len - embedded_wiki_start);
     if (parser->root->last_child != NULL && parser->root->last_child->type == NAMUMARK_NODE_WIKI_BLOCK) {
@@ -2025,7 +2058,8 @@ void process_line(namumark_parser *parser) {
       parser->inline_advanced_depth = opens - closes;
       parser->inline_text_node = text;
     } else {
-      parse_inlines(&text->content, text, parser->line_number);
+      /* Paragraph text spans the whole physical line starting at column 1. */
+      parse_inlines(&text->content, text, parser->line_number, 1);
     }
   }
 
@@ -2063,7 +2097,8 @@ namumark_node *finalize(namumark_parser *parser, namumark_node *block) {
   block->flags &= ~NAMUMARK_NODE_OPEN;
   if (parser != NULL) {
     block->end_line = parser->line_number;
-    block->end_column = (int)parser->last_line_length;
+    /* Half-open: column just past the last byte of the final line. */
+    block->end_column = (int)parser->last_line_length + 1;
   }
 
   return block->parent;
@@ -2075,6 +2110,7 @@ namumark_node *finalize_document(namumark_parser *parser) {
     return NULL;
   }
 
-  finalize_tree(parser->root, parser->line_number, (int)parser->last_line_length);
+  /* Half-open fallback column for nodes left open at EOF. */
+  finalize_tree(parser->root, parser->line_number, (int)parser->last_line_length + 1);
   return parser->root;
 }
