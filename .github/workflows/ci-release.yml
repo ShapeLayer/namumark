@@ -73,7 +73,7 @@ jobs:
 
       - name: Configure Windows
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DNAMUMARK_BUILD_TESTING=OFF
+        run: cmake -S . -B build -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DNAMUMARK_BUILD_TESTING=OFF
 
       - name: Configure Unix
         if: runner.os != 'Windows'
