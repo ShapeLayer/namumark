@@ -80,6 +80,28 @@ static int print_indent(FILE *out, int depth) {
   return 1;
 }
 
+/**
+ * @brief Emit a named span object when it is set, e.g. `"outer_span": {...},`.
+ *
+ * A span is considered unset when start_line == 0 and is skipped entirely so
+ * consumers only see spans that actually apply to the node.
+ */
+static int print_optional_span(FILE *out, int depth, const char *name,
+                               const namumark_span *span) {
+  if (span == NULL || span->start_line == 0) {
+    return 1;
+  }
+  if (!print_indent(out, depth) || fputs("\"", out) < 0 || fputs(name, out) < 0 ||
+      fputs("\": {", out) < 0) {
+    return 0;
+  }
+  if (fprintf(out, "\"start_line\": %d, \"start_column\": %d, \"end_line\": %d, \"end_column\": %d",
+              span->start_line, span->start_column, span->end_line, span->end_column) < 0) {
+    return 0;
+  }
+  return fputs("},\n", out) >= 0;
+}
+
 static int print_quoted(FILE *out, const strbuf *value) {
   if (fputc('"', out) == EOF) {
     return 0;
@@ -149,6 +171,17 @@ static int print_node_json(const namumark_node *node, FILE *out, int depth) {
     return 0;
   }
   if (fputs("},\n", out) < 0) {
+    return 0;
+  }
+
+  /* Optional delimiter-inclusive and link-component spans (only when set). */
+  if (!print_optional_span(out, depth + 1, "outer_span", &node->outer_span)) {
+    return 0;
+  }
+  if (!print_optional_span(out, depth + 1, "target_span", &node->target_span)) {
+    return 0;
+  }
+  if (!print_optional_span(out, depth + 1, "label_span", &node->label_span)) {
     return 0;
   }
 

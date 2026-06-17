@@ -344,6 +344,141 @@ TEST(RendererTest, AstBlockSpansAreHalfOpen) {
   parser_free(parser);
 }
 
+TEST(RendererTest, AstEmitsOuterSpanForDelimitedNodes) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   *   index:  12345678901
+   *   text:   ab '''CD'''
+   *   - position (inner "CD")  -> [1:7, 1:9)
+   *   - outer_span ("'''CD'''") -> [1:4, 1:12)  (delimiters included)
+   * A client paints the delimiters by subtracting position from outer_span.
+   */
+  const char *input = "ab '''CD'''\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(
+      ast.find(
+          "\"outer_span\": {\"start_line\": 1, \"start_column\": 4, \"end_line\": 1, \"end_column\": 12}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstEmitsLinkTargetAndLabelSpans) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   *   index:  1234567890
+   *   text:   [[T|L]]
+   *   - target_span "T" -> [1:3, 1:4)
+   *   - label_span  "L" -> [1:5, 1:6)
+   *   - outer_span "[[T|L]]" -> [1:1, 1:8)
+   */
+  const char *input = "[[T|L]]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(
+      ast.find(
+          "\"outer_span\": {\"start_line\": 1, \"start_column\": 1, \"end_line\": 1, \"end_column\": 8}"),
+      std::string::npos);
+  EXPECT_NE(
+      ast.find(
+          "\"target_span\": {\"start_line\": 1, \"start_column\": 3, \"end_line\": 1, \"end_column\": 4}"),
+      std::string::npos);
+  EXPECT_NE(
+      ast.find(
+          "\"label_span\": {\"start_line\": 1, \"start_column\": 5, \"end_line\": 1, \"end_column\": 6}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstOmitsLabelSpanForEmptyLabelLink) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * An empty label [[T|]] must not emit a phantom zero-width label_span; this
+   * matches parse_link_target, which records no label when nothing follows '|'.
+   */
+  const char *input = "[[T|]]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  /* target_span is present, label_span is omitted entirely. */
+  EXPECT_NE(ast.find("\"target_span\":"), std::string::npos);
+  EXPECT_EQ(ast.find("\"label_span\":"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(ParserTest_ExternalLink, SingleBracketUrlWithLabelParsesAsLink) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /* [url label] must become an external link, not stay as plain text. */
+  const char *input = "[https://example.com 예시]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  ASSERT_NE(doc->first_child, nullptr);
+  namumark_node *link = doc->first_child->first_child;
+  ASSERT_NE(link, nullptr);
+  EXPECT_EQ(link->type, NAMUMARK_NODE_LINK);
+  EXPECT_EQ(link->link_type, NAMUMARK_LINK_EXTERNAL);
+  EXPECT_STREQ(reinterpret_cast<const char *>(link->target.ptr), "https://example.com");
+  EXPECT_STREQ(reinterpret_cast<const char *>(link->args.ptr), "예시");
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, AstIncludesDocumentCategories) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

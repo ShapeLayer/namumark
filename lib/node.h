@@ -17,6 +17,21 @@
 extern "C" {
 #endif
 
+/**
+ * @brief A half-open source span in absolute 1-based line/byte-column terms.
+ *
+ * Same conventions as the node position fields: lines are 1-based, columns are
+ * 1-based byte offsets within the physical line, and end_column is one past the
+ * span's last byte (width == end_column - start_column). A span with
+ * start_line == 0 is "unset" and should be omitted by consumers.
+ */
+typedef struct namumark_span {
+  int start_line;
+  int start_column;
+  int end_line;
+  int end_column;
+} namumark_span;
+
 typedef struct namumark_node {
   /** Raw source content or normalized body text for this node. */
   strbuf content;
@@ -53,6 +68,29 @@ typedef struct namumark_node {
   int start_column;
   int end_line;
   int end_column;
+
+  /**
+   * Full source span including markup delimiters, when the node is delimited.
+   *
+   * The position fields above describe the inner content (text between the
+   * delimiters), while outer_span covers the whole syntactic token including
+   * the opening/closing punctuation. For example, for '''CD''' the position is
+   * the "CD" span and outer_span is the "'''CD'''" span; a highlighting client
+   * can paint delimiters by subtracting position from outer_span.
+   *
+   * outer_span is unset (start_line == 0) for plain text and for nodes without
+   * delimiters; in that case consumers should fall back to the position fields.
+   */
+  namumark_span outer_span;
+
+  /**
+   * For link nodes only: absolute spans of the parsed target and (optional)
+   * label within the source, splitting around the '|' separator. Unset spans
+   * (start_line == 0) mean the component is absent (e.g. a target-only link has
+   * no label_span). These describe source positions, not normalized targets.
+   */
+  namumark_span target_span;
+  namumark_span label_span;
 
   namumark_node_internal_flags flags;
 
