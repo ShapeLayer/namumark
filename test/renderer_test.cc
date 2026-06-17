@@ -211,6 +211,274 @@ TEST(RendererTest, AstIsProduced) {
   parser_free(parser);
 }
 
+TEST(RendererTest, AstIncludesSourcePositions) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * ASCII case lets us assert exact columns. Columns are 1-based byte offsets
+   * following a half-open convention (end = one past the last byte, so
+   * width == end - start).
+   *
+   *   index:  1234567890123456
+   *   text:   ab '''CD''' ef
+   *   - "ab "         bytes 1..3   -> [1:1, 1:4)
+   *   - bold "CD"     bytes 7..8   -> [1:7, 1:9)   (after the opening ''')
+   *   - " ef"         bytes 12..14 -> [1:12, 1:15)
+   */
+  const char *input = "ab '''CD''' ef\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  /* Every node must carry a position object with the four span fields. */
+  EXPECT_NE(ast.find("\"position\": {"), std::string::npos);
+
+  /* Leading text width matches its byte length (half-open). */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 1, \"end_line\": 1, \"end_column\": 4}"),
+      std::string::npos);
+
+  /* Bold span points exactly at "CD" (column 7), just past the opening '''. */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 7, \"end_line\": 1, \"end_column\": 9}"),
+      std::string::npos);
+
+  /* Trailing text after the closing ''' starts at absolute column 12. */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 12, \"end_line\": 1, \"end_column\": 15}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstChildSpansUseAbsoluteLineColumns) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * Regression: inline children inside emphasis and headings must keep absolute
+   * line columns instead of resetting to 1.
+   *   bold "CD" at [1:7, 1:9) contains text "CD" at the SAME [1:7, 1:9).
+   *   heading title "Hi" begins after "= " at column 3 -> text "Hi" [2:3, 2:5).
+   */
+  const char *input = "ab '''CD''' ef\n= Hi =\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  /* Nested text under bold keeps the absolute span, not [1:1, 1:x). */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 7, \"end_line\": 1, \"end_column\": 9}"),
+      std::string::npos);
+
+  /* Heading inline text uses the title's absolute start column (3), not 1. */
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 2, \"start_column\": 3, \"end_line\": 2, \"end_column\": 5}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstBlockSpansAreHalfOpen) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * Block nodes (here a table) must use the same half-open convention as inline
+   * nodes: end_column is one past the last byte of the final physical line.
+   * The last row "|| C || D ||" is 12 bytes -> end_column 13 on line 2.
+   */
+  const char *input = "|| A || B ||\n|| C || D ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 1, \"end_line\": 2, \"end_column\": 13}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstEmitsOuterSpanForDelimitedNodes) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   *   index:  12345678901
+   *   text:   ab '''CD'''
+   *   - position (inner "CD")  -> [1:7, 1:9)
+   *   - outer_span ("'''CD'''") -> [1:4, 1:12)  (delimiters included)
+   * A client paints the delimiters by subtracting position from outer_span.
+   */
+  const char *input = "ab '''CD'''\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(
+      ast.find(
+          "\"outer_span\": {\"start_line\": 1, \"start_column\": 4, \"end_line\": 1, \"end_column\": 12}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstEmitsLinkTargetAndLabelSpans) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   *   index:  1234567890
+   *   text:   [[T|L]]
+   *   - target_span "T" -> [1:3, 1:4)
+   *   - label_span  "L" -> [1:5, 1:6)
+   *   - outer_span "[[T|L]]" -> [1:1, 1:8)
+   */
+  const char *input = "[[T|L]]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(
+      ast.find(
+          "\"outer_span\": {\"start_line\": 1, \"start_column\": 1, \"end_line\": 1, \"end_column\": 8}"),
+      std::string::npos);
+  EXPECT_NE(
+      ast.find(
+          "\"target_span\": {\"start_line\": 1, \"start_column\": 3, \"end_line\": 1, \"end_column\": 4}"),
+      std::string::npos);
+  EXPECT_NE(
+      ast.find(
+          "\"label_span\": {\"start_line\": 1, \"start_column\": 5, \"end_line\": 1, \"end_column\": 6}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(RendererTest, AstOmitsLabelSpanForEmptyLabelLink) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * An empty label [[T|]] must not emit a phantom zero-width label_span; this
+   * matches parse_link_target, which records no label when nothing follows '|'.
+   */
+  const char *input = "[[T|]]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  /* target_span is present, label_span is omitted entirely. */
+  EXPECT_NE(ast.find("\"target_span\":"), std::string::npos);
+  EXPECT_EQ(ast.find("\"label_span\":"), std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
+TEST(ParserTest_ExternalLink, SingleBracketUrlWithLabelParsesAsLink) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /* [url label] must become an external link, not stay as plain text. */
+  const char *input = "[https://example.com 예시]\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  ASSERT_NE(doc->first_child, nullptr);
+  namumark_node *link = doc->first_child->first_child;
+  ASSERT_NE(link, nullptr);
+  EXPECT_EQ(link->type, NAMUMARK_NODE_LINK);
+  EXPECT_EQ(link->link_type, NAMUMARK_LINK_EXTERNAL);
+  EXPECT_STREQ(reinterpret_cast<const char *>(link->target.ptr), "https://example.com");
+  EXPECT_STREQ(reinterpret_cast<const char *>(link->args.ptr), "예시");
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, AstIncludesDocumentCategories) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

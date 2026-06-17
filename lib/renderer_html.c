@@ -613,7 +613,8 @@ static int render_advanced_content(FILE *out, const strbuf *content) {
   namumark_node fake_parent = {0};
   strbuf_init(&fake_parent.content, content->size + 1);
   strbuf_set(&fake_parent.content, content->ptr, content->size);
-  parse_inlines(content, &fake_parent, 0);
+  /* Detached render-time re-parse: no physical-line context, so base column 1. */
+  parse_inlines(content, &fake_parent, 0, 1);
 
   int ok = render_inline_children_with_line_breaks(out, &fake_parent);
 
@@ -2138,7 +2139,8 @@ static int render_inline_snippet(FILE *out, const unsigned char *text, bufsize_t
   namumark_node fake_parent = {0};
   strbuf_init(&fake_parent.content, part.size + 1);
   strbuf_set(&fake_parent.content, part.ptr, part.size);
-  parse_inlines(&part, &fake_parent, 0);
+  /* Detached snippet re-parse: no physical-line context, so base column 1. */
+  parse_inlines(&part, &fake_parent, 0, 1);
 
   int ok = render_inline_children(out, &fake_parent);
 
@@ -3347,7 +3349,8 @@ static int render_block_node(FILE *out, const namumark_node *node) {
           namumark_node fake_parent = {0};
           strbuf_init(&fake_parent.content, body.size + 1);
           strbuf_set(&fake_parent.content, body.ptr, body.size);
-          parse_inlines(&body, &fake_parent, continuation->start_line);
+          /* Re-sliced continuation content; absolute column not recoverable. */
+          parse_inlines(&body, &fake_parent, continuation->start_line, 1);
           int ok = render_inline_children(out, &fake_parent);
           strbuf_free(&fake_parent.content);
           namumark_node *child = fake_parent.first_child;
