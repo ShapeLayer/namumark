@@ -310,6 +310,40 @@ TEST(RendererTest, AstChildSpansUseAbsoluteLineColumns) {
   parser_free(parser);
 }
 
+TEST(RendererTest, AstBlockSpansAreHalfOpen) {
+  namumark_parser *parser = parser_new();
+  ASSERT_NE(parser, nullptr);
+
+  /*
+   * Block nodes (here a table) must use the same half-open convention as inline
+   * nodes: end_column is one past the last byte of the final physical line.
+   * The last row "|| C || D ||" is 12 bytes -> end_column 13 on line 2.
+   */
+  const char *input = "|| A || B ||\n|| C || D ||\n";
+  parser_feed(parser, reinterpret_cast<const unsigned char *>(input), strlen(input));
+
+  namumark_node *doc = parser_finish(parser);
+  ASSERT_NE(doc, nullptr);
+
+  char *buf = nullptr;
+  size_t len = 0;
+  FILE *fp = open_memstream(&buf, &len);
+  ASSERT_NE(fp, nullptr);
+  EXPECT_TRUE(print_document_ast(doc, fp));
+  fclose(fp);
+
+  std::string ast(buf, len);
+  free(buf);
+
+  EXPECT_NE(
+      ast.find(
+          "\"position\": {\"start_line\": 1, \"start_column\": 1, \"end_line\": 2, \"end_column\": 13}"),
+      std::string::npos);
+
+  namumark_node_free(doc);
+  parser_free(parser);
+}
+
 TEST(RendererTest, AstIncludesDocumentCategories) {
   namumark_parser *parser = parser_new();
   ASSERT_NE(parser, nullptr);

@@ -1236,7 +1236,8 @@ static void process_advanced_close_tail(namumark_parser *parser, const unsigned 
     namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
     if (pre != NULL) {
       pre->end_line = parser->line_number;
-      pre->end_column = (int)line_len;
+      /* Half-open: column just past the last byte of the physical line. */
+      pre->end_column = (int)line_len + 1;
 
       bufsize_t start_idx = skip_spaces(tail_line, tail_len, 0) + 3;
       if (start_idx < tail_len) {
@@ -1440,7 +1441,8 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->wiki_block_node->end_line = parser->line_number;
-      parser->wiki_block_node->end_column = (int)reopen_content_end;
+      /* Half-open: content occupies bytes [0, reopen_content_end). */
+      parser->wiki_block_node->end_column = (int)reopen_content_end + 1;
       parser->wiki_block_depth = 0;
       parser->wiki_nonwiki_depth = 0;
       parser->wiki_block_node = NULL;
@@ -1464,7 +1466,8 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->wiki_block_node->end_line = parser->line_number;
-      parser->wiki_block_node->end_column = (int)tail_content_end;
+      /* Half-open: content occupies bytes [0, tail_content_end). */
+      parser->wiki_block_node->end_column = (int)tail_content_end + 1;
       parser->wiki_block_depth = 0;
       parser->wiki_nonwiki_depth = 0;
       parser->wiki_block_node = NULL;
@@ -1484,7 +1487,7 @@ void process_line(namumark_parser *parser) {
 
       if (after < len && starts_with_wiki_token_at(line, len, after)) {
         parser->wiki_block_node->end_line = parser->line_number;
-        parser->wiki_block_node->end_column = (int)len;
+        parser->wiki_block_node->end_column = (int)len + 1;
 
         namumark_node *next_wiki = append_block_text(parser, NAMUMARK_NODE_WIKI_BLOCK, NULL, 0);
         if (next_wiki != NULL) {
@@ -1597,7 +1600,7 @@ void process_line(namumark_parser *parser) {
     }
 
     parser->wiki_block_node->end_line = parser->line_number;
-    parser->wiki_block_node->end_column = (int)len;
+    parser->wiki_block_node->end_column = (int)len + 1;
 
     parser->wiki_block_depth = projected_depth;
     if (parser->wiki_block_depth <= 0) {
@@ -1626,7 +1629,7 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->advanced_text_node->end_line = parser->line_number;
-      parser->advanced_text_node->end_column = (int)len;
+      parser->advanced_text_node->end_column = (int)len + 1;
       parser->advanced_brace_depth = 0;
       parser->advanced_text_node = NULL;
 
@@ -1654,7 +1657,7 @@ void process_line(namumark_parser *parser) {
       }
 
       parser->advanced_text_node->end_line = parser->line_number;
-      parser->advanced_text_node->end_column = (int)len;
+      parser->advanced_text_node->end_column = (int)len + 1;
       parser->advanced_brace_depth = 0;
       parser->advanced_text_node = NULL;
 
@@ -1677,7 +1680,7 @@ void process_line(namumark_parser *parser) {
       strbuf_put(&parser->advanced_text_node->content, line, len);
     }
     parser->advanced_text_node->end_line = parser->line_number;
-    parser->advanced_text_node->end_column = (int)len;
+    parser->advanced_text_node->end_column = (int)len + 1;
 
     parser->advanced_brace_depth += count_token(line, len, "{{{", 3);
     parser->advanced_brace_depth -= count_token(line, len, "}}}", 3);
@@ -1750,7 +1753,7 @@ void process_line(namumark_parser *parser) {
     strbuf_putc(&table->content, '\n');
     strbuf_put(&table->content, line, len);
     table->end_line = parser->line_number;
-    table->end_column = (int)len;
+    table->end_column = (int)len + 1;
     parser->table_continuation = false;
     parser->table_wiki_block_depth = 0;
     parser->table_wiki_nonwiki_depth = 0;
@@ -1768,7 +1771,7 @@ void process_line(namumark_parser *parser) {
     strbuf_putc(&table->content, '\n');
     strbuf_put(&table->content, line, len);
     table->end_line = parser->line_number;
-    table->end_column = (int)len;
+    table->end_column = (int)len + 1;
 
     update_table_wiki_depth(parser, line, len);
     if (parser->table_wiki_block_depth <= 0 && parser->table_wiki_nonwiki_depth <= 0 &&
@@ -1821,7 +1824,7 @@ void process_line(namumark_parser *parser) {
     namumark_node *pre = append_block_text(parser, NAMUMARK_NODE_PREFORMATTED, NULL, 0);
     if (pre != NULL) {
       pre->end_line = parser->line_number;
-      pre->end_column = (int)len;
+      pre->end_column = (int)len + 1;
 
       bufsize_t start_idx = skip_spaces(line, len, 0) + 3;
       if (start_idx < len) {
@@ -1990,7 +1993,7 @@ void process_line(namumark_parser *parser) {
       strbuf_putc(&table->content, '\n');
       strbuf_put(&table->content, line, len);
       table->end_line = parser->line_number;
-      table->end_column = (int)len;
+      table->end_column = (int)len + 1;
       parser->table_wiki_block_depth = 0;
       parser->table_wiki_nonwiki_depth = 0;
 
@@ -2014,7 +2017,7 @@ void process_line(namumark_parser *parser) {
       strbuf_putc(&table->content, '\n');
       strbuf_put(&table->content, line, len);
       table->end_line = parser->line_number;
-      table->end_column = (int)len;
+      table->end_column = (int)len + 1;
     } else {
       table = append_block_text(parser, NAMUMARK_NODE_TABLE, line, len);
     }
@@ -2094,7 +2097,8 @@ namumark_node *finalize(namumark_parser *parser, namumark_node *block) {
   block->flags &= ~NAMUMARK_NODE_OPEN;
   if (parser != NULL) {
     block->end_line = parser->line_number;
-    block->end_column = (int)parser->last_line_length;
+    /* Half-open: column just past the last byte of the final line. */
+    block->end_column = (int)parser->last_line_length + 1;
   }
 
   return block->parent;
@@ -2106,6 +2110,7 @@ namumark_node *finalize_document(namumark_parser *parser) {
     return NULL;
   }
 
-  finalize_tree(parser->root, parser->line_number, (int)parser->last_line_length);
+  /* Half-open fallback column for nodes left open at EOF. */
+  finalize_tree(parser->root, parser->line_number, (int)parser->last_line_length + 1);
   return parser->root;
 }
